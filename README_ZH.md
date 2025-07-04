@@ -1,4 +1,5 @@
 # MDX/MDD Parser for Go
+[EN](README.md)
 
 这是一个使用 Go 语言编写的高性能 MDict (.mdx/.mdd) 文件解析库。它支持查询词典内容、获取词典元信息，并提供了符合 `io/fs.FS` 接口的文件系统封装，方便与其他 Go 生态库（如 HTTP 服务器）集成。
 

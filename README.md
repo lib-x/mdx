@@ -1,5 +1,5 @@
 # MDX/MDD Parser for Go
-
+[CN](README_ZH.md)
 This is a high-performance MDict (.mdx/.mdd) file parsing library written in Go. It supports querying dictionary content, retrieving dictionary metadata, and provides a file system wrapper compliant with the `io/fs.FS` interface, making it easy to integrate with other Go ecosystem libraries (such as HTTP servers).
 
 This library was originally based on the [terasum/medict](https://github.com/terasum/medict) project and has undergone extensive bug fixes, performance optimizations, and code refactoring.

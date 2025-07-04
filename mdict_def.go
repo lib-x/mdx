@@ -16,25 +16,41 @@
 
 package mdx
 
+// MdictType represents the type of the dictionary file (MDX or MDD).
 type MdictType int
 
 const (
+	// MdictTypeMdd indicates an MDD file.
 	MdictTypeMdd MdictType = 1
+	// MdictTypeMdx indicates an MDX file.
 	MdictTypeMdx MdictType = 2
 
-	EncryptNoEnc      = 0
-	EncryptRecordEnc  = 1
+	// EncryptNoEnc indicates no encryption.
+	EncryptNoEnc = 0
+	// EncryptRecordEnc indicates record block encryption.
+	EncryptRecordEnc = 1
+	// EncryptKeyInfoEnc indicates key info block encryption.
 	EncryptKeyInfoEnc = 2
-	NumfmtBe8bytesq   = 0
-	NumfmtBe4bytesi   = 1
-	EncodingUtf8      = 0
-	EncodingUtf16     = 1
-	EncodingBig5      = 2
-	ENCODING_GBK      = 3
-	ENCODING_GB2312   = 4
-	EncodingGb18030   = 5
+	// NumfmtBe8bytesq represents big-endian 8-byte unsigned integer.
+	NumfmtBe8bytesq = 0
+	// NumfmtBe4bytesi represents big-endian 4-byte unsigned integer.
+	NumfmtBe4bytesi = 1
+	// EncodingUtf8 represents UTF-8 encoding.
+	EncodingUtf8 = 0
+	// EncodingUtf16 represents UTF-16 encoding.
+	EncodingUtf16 = 1
+	// EncodingBig5 represents Big5 encoding.
+	EncodingBig5 = 2
+	// EncodingGbk represents GBK encoding.
+	EncodingGbk = 3
+	// EncodingGb2312 represents GB2312 encoding.
+	EncodingGb2312 = 4
+	// EncodingGb18030 represents GB18030 encoding.
+	EncodingGb18030 = 5
 )
 
+// MdictBase is the base structure for handling MDict file parsing.
+// It contains all the necessary metadata and data structures read from the file.
 type MdictBase struct {
 	filePath string
 	fileType MdictType
@@ -133,6 +149,7 @@ type mdictRecordBlockInfo struct {
 	recordBlockDataStartOffset int64
 }
 
+// MdictRecordBlockInfoListItem holds information about a single record block.
 type MdictRecordBlockInfoListItem struct {
 	compressSize                int64
 	deCompressSize              int64
@@ -144,6 +161,7 @@ type MdictRecordBlockInfoListItem struct {
  *    public data type          *
  ********************************/
 
+// MDictKeywordEntry represents a single keyword entry from the key block.
 type MDictKeywordEntry struct {
 	RecordStartOffset int64
 	RecordEndOffset   int64
@@ -151,6 +169,8 @@ type MDictKeywordEntry struct {
 	KeyBlockIdx       int64
 }
 
+// MDictKeywordIndex provides a detailed index for a keyword,
+// linking it to its specific location within a record block.
 type MDictKeywordIndex struct {
 	//encoding                            int
 	//encryptType                         int
@@ -158,6 +178,8 @@ type MDictKeywordIndex struct {
 	RecordBlock  MDictKeywordIndexRecordBlock
 }
 
+// MDictKeywordIndexRecordBlock contains information about the record block
+// where a specific keyword's definition is stored.
 type MDictKeywordIndexRecordBlock struct {
 	DataStartOffset          int64
 	CompressSize             int64

@@ -19,30 +19,40 @@ package mdx
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/rasky/go-lzo"
 	"os"
 	"testing"
+
+	"github.com/rasky/go-lzo"
 
 	"github.com/stretchr/testify/assert"
 )
 
+func skipIfNoFile(t *testing.T, path string) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skipf("Skipping test because test data file is missing: %s", path)
+	}
+}
+
 func TestReadMDictFile(t *testing.T) {
-	mdict, err := readMDictFileHeader("testdata/mdx/testdict.mdx")
+	path := "testdata/mdx/testdict.mdx"
+	skipIfNoFile(t, path)
+	mdict, err := readMDictFileHeader(path)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 	assert.Equal(t, uint32(1190), mdict.headerBytesSize)
 	t.Log("header Bytes Size:", mdict.headerBytesSize)
-	assert.Equal(t, "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Format=\"Html\" KeyCaseSensitive=\"No\" StripKey=\"Yes\" Encrypted=\"2\" RegisterBy=\"EMail\" Description=\"Oxford Advanced Learner’s English-Chinese Dictionary Eighth edition Based on Langheping&apos;s version Modified by EarthWorm&lt;br/&gt;\r\nHeadwords: 41969 &lt;br/&gt;\r\nEntries: 109473 &lt;br/&gt;\r\nVersion: 3.0.0 &lt;br/&gt;\r\nDate: 2018.02.18 &lt;br/&gt;\r\nLast Modified By roamlog&lt;br/&gt;\" Title=\"\" IsUTF16=\"UTF-8\" CreationDate=\"2018-2-18\" Compact=\"Yes\" Compat=\"Yes\" Left2Right=\"Yes\" DataSourceFormat=\"106\" StyleSheet=\"\"/>\r\n\u0000",
+	assert.Equal(t, "<Dictionary GeneratedByEngineVersion=\"2.0\" RequiredEngineVersion=\"2.0\" Format=\"Html\" KeyCaseSensitive=\"No\" StripKey=\"Yes\" Encrypted=\"2\" RegisterBy=\"EMail\" Description=\"Oxford Advanced Learner’s English-Chinese Dictionary Eighth edition Based on Langheping's version Modified by EarthWorm<br/>\r\nHeadwords: 41969 <br/>\r\nEntries: 109473 <br/>\r\nVersion: 3.0.0 <br/>\r\nDate: 2018.02.18 <br/>\r\nLast Modified By roamlog<br/>\" Title=\"\" IsUTF16=\"UTF-8\" CreationDate=\"2018-2-18\" Compact=\"Yes\" Compat=\"Yes\" Left2Right=\"Yes\" DataSourceFormat=\"106\" StyleSheet=\"\"/>\r\n\u0000",
 		mdict.headerInfo)
 	t.Log("header Info:", mdict.headerInfo)
 	assert.Equal(t, 3301029905, int(mdict.adler32Checksum))
-	//fmt.Println("Adler32 Checksum:", int(mdict.adler32Checksum))
 }
 
 func TestReadMDictFile2(t *testing.T) {
-	mdict, err := readMDictFileHeader("testdata/dict/wlghyzd2000.mdx")
+	path := "testdata/dict/wlghyzd2000.mdx"
+	skipIfNoFile(t, path)
+	mdict, err := readMDictFileHeader(path)
 	if err != nil {
 		t.Error(err)
 		return
@@ -55,8 +65,10 @@ func TestReadMDictFile2(t *testing.T) {
 }
 
 func TestMdictBase_ReadDictHeader(t *testing.T) {
+	path := "testdata/dict/testdict.mdx"
+	skipIfNoFile(t, path)
 	mdictBase := &MdictBase{
-		filePath: "testdata/dict/testdict.mdx",
+		filePath: path,
 	}
 	err := mdictBase.readDictHeader()
 	if err != nil {
@@ -71,8 +83,10 @@ func TestMdictBase_ReadDictHeader(t *testing.T) {
 }
 
 func TestMdictBase_ReadDictHeader2(t *testing.T) {
+	path := "testdata/dict/testdict.mdx"
+	skipIfNoFile(t, path)
 	mdictBase := &MdictBase{
-		filePath: "testdata/dict/testdict.mdx",
+		filePath: path,
 	}
 	err := mdictBase.readDictHeader()
 	if err != nil {
@@ -95,12 +109,12 @@ func TestMdictBase_ReadDictHeader2(t *testing.T) {
 	}
 
 	t.Logf("%s\n", jsondata)
-
-	//t.Logf("Dictionary header keyBlockStartOffset %d / meta KeyBlockHeaderStartOffset %d\n", mdictBase.header.KeyBlockOffset, mdictBase.meta.KeyBlockHeaderStartOffset)
 }
 func TestMdictBase_ReadDictHeader3(t *testing.T) {
+	path := "testdata/dict/oale8.mdx"
+	skipIfNoFile(t, path)
 	mdictBase := &MdictBase{
-		filePath: "testdata/dict/oale8.mdx",
+		filePath: path,
 	}
 	err := mdictBase.readDictHeader()
 	if err != nil {
@@ -163,8 +177,10 @@ func TestMdictBase_ReadDictHeader3(t *testing.T) {
 }
 
 func TestMdictBase_ReadDictFixBug1(t *testing.T) {
+	path := "testdata/bugdict/教育部重編國語辭典(第五版)/教育部重編國語辭典(第五版).mdx"
+	skipIfNoFile(t, path)
 	mdictBase := &MdictBase{
-		filePath: "testdata/bugdict/教育部重編國語辭典(第五版)/教育部重編國語辭典(第五版).mdx",
+		filePath: path,
 	}
 	err := mdictBase.readDictHeader()
 	if err != nil {
@@ -227,12 +243,12 @@ func TestMdictBase_ReadDictFixBug1(t *testing.T) {
 }
 
 func TestExtractContentByRecordIndex(t *testing.T) {
+	path := "testdata/mdx/testdict.mdx"
+	skipIfNoFile(t, path)
 	keyWord := "a"
-	//recordStartOffset := 30239433
-	//recordEndOffset := 30255629
 	recordBlockDataStartOffset := int64(4676923)
 	recordBlockDataLen := int64(10013)
-	myFile, err := os.Open("testdata/mdx/testdict.mdx")
+	myFile, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,8 +259,6 @@ func TestExtractContentByRecordIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%s, data %s", keyWord, string(data))
-	//t.Logf("%s, data %s", keyWord, string(data[recordStartOffset:recordEndOffset]))
-
 }
 
 func testExtractData(file *os.File, recordBlockStartOffset, CompressSize int64, EncryptRecordEnc bool) ([]byte, error) {
@@ -253,41 +267,26 @@ func testExtractData(file *os.File, recordBlockStartOffset, CompressSize int64, 
 		return nil, err
 	}
 
-	// 4 bytes: compression type
 	var rbCompType = recordBlockDataCompBuff[0:4]
-
-	// record_block stores the final record data
 	var recordBlock []byte
 
-	// TODO: ignore adler32 offset
-	// Note: here ignore the checksum part
-	// bytes: adler32 checksum of decompressed record block
-	// adler32 = unpack('>I', record_block_compressed[4:8])[0]
 	if rbCompType[0] == 0 {
 		recordBlock = recordBlockDataCompBuff[8:CompressSize]
 		return recordBlock, nil
 	}
 
-	// decrypt
 	var blockBufDecrypted []byte
-	// if encrypt type == 1, the record block was encrypted
 	if EncryptRecordEnc {
-		// const passkey = new Uint8Array(8);
-		// record_block_compressed.copy(passkey, 0, 4, 8);
-		// passkey.set([0x95, 0x36, 0x00, 0x00], 4); // key part 2: fixed data
 		blockBufDecrypted = mdxDecrypt(recordBlockDataCompBuff, CompressSize)
 	} else {
 		blockBufDecrypted = recordBlockDataCompBuff[8:CompressSize]
 	}
 
-	// decompress
 	if rbCompType[0] == 1 {
-		// TODO the second part
 		header := []byte{0xf0, byte(int(CompressSize))}
-		// # decompress key block
 		reader := bytes.NewReader(append(header, blockBufDecrypted...))
 
-		out, err1 := lzo.Decompress1X(reader, 0, 0 /* decompressedSize, 1308672*/)
+		out, err1 := lzo.Decompress1X(reader, 0, 0)
 		if err1 != nil {
 			return nil, err1
 		}
@@ -305,36 +304,3 @@ func testExtractData(file *os.File, recordBlockStartOffset, CompressSize int64, 
 
 	return recordBlock, nil
 }
-
-//func testExtraceDefData(recordBlock []byte, DeCompress) {
-//	// TODO: ignore the checksum
-//	// notice that adler32 return signed value
-//	// assert(adler32 == zlib.adler32(record_block) & 0xffffffff)
-//
-//	if int64(len(recordBlock)) != recordBlockInfo.RecordBlockDeCompressSize {
-//		return nil, errors.New("recordBlock length not equals decompress Size")
-//	}
-//
-//	start := item.RecordLocateStartOffset - recordBlockInfo.deCompressAccumulatorOffset
-//	var end int64
-//	if item.RecordLocateEndOffset == 0 {
-//		end = int64(len(recordBlock))
-//	} else {
-//		end = item.RecordLocateEndOffset - recordBlockInfo.deCompressAccumulatorOffset
-//	}
-//
-//	data := recordBlock[start:end]
-//
-//	if mdict.fileType == MdictTypeMdd {
-//		return data, nil
-//	}
-//
-//	if mdict.meta.encoding == EncodingUtf16 {
-//		datastr, err1 := decodeLittleEndianUtf16(data)
-//		if err1 != nil {
-//			return nil, err
-//		}
-//		return []byte(datastr), nil
-//	}
-//	return data, nil
-//}

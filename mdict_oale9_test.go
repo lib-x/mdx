@@ -1,20 +1,26 @@
 package mdx
 
 import (
+	"os"
 	"testing"
 )
 
 func TestOALE9(t *testing.T) {
-	dict, err := New("testdata/mdx/testdict.mdx")
+	path := "testdata/mdx/testdict.mdx"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skipf("Skipping test because test data file is missing: %s", path)
+	}
+
+	dict, err := New(path)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 
 	err = dict.BuildIndex()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("Digest:\n-----------------------------\n%s\n", dict.Digest())
 
 	keywordEntries, err := dict.GetKeyWordEntries()
 	if err != nil {
@@ -37,7 +43,5 @@ func TestOALE9(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("def: %s", def)
-
 	}
-
 }

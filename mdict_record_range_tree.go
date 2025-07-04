@@ -1,5 +1,7 @@
 package mdx
 
+// RecordBlockRangeTreeNode represents a node in the record block range tree.
+// This tree is used to efficiently find the record block corresponding to a given offset.
 type RecordBlockRangeTreeNode struct {
 	startRange int64
 	endRange   int64
@@ -8,6 +10,8 @@ type RecordBlockRangeTreeNode struct {
 	right      *RecordBlockRangeTreeNode
 }
 
+// BuildRangeTree constructs a range tree from a list of record block info items.
+// This tree allows for efficient querying of record blocks based on an offset.
 func BuildRangeTree(list []*MdictRecordBlockInfoListItem, root *RecordBlockRangeTreeNode) {
 	if len(list) == 0 {
 		return
@@ -33,7 +37,7 @@ func BuildRangeTree(list []*MdictRecordBlockInfoListItem, root *RecordBlockRange
 	root.startRange = list[0].deCompressAccumulatorOffset
 	root.endRange = list[len(list)-1].deCompressAccumulatorOffset + list[len(list)-1].deCompressSize
 
-	mid := (0 + len(list) - 1) / 2
+	mid := (len(list) - 1) / 2
 	if mid > 0 {
 		root.left = new(RecordBlockRangeTreeNode)
 		BuildRangeTree(list[0:mid], root.left)
@@ -43,9 +47,10 @@ func BuildRangeTree(list []*MdictRecordBlockInfoListItem, root *RecordBlockRange
 		root.right = new(RecordBlockRangeTreeNode)
 		BuildRangeTree(list[mid:], root.right)
 	}
-
 }
 
+// QueryRangeData queries the range tree to find the record block info item
+// that contains the given queryRange offset.
 func QueryRangeData(root *RecordBlockRangeTreeNode, queryRange int64) *MdictRecordBlockInfoListItem {
 	if root == nil {
 		return nil
@@ -53,19 +58,18 @@ func QueryRangeData(root *RecordBlockRangeTreeNode, queryRange int64) *MdictReco
 
 	if root.startRange > queryRange || root.endRange < queryRange {
 		return nil
-	} else {
-		if root.data != nil {
-			return root.data
-		}
-
-		if root.left != nil && root.left.endRange > queryRange {
-			return QueryRangeData(root.left, queryRange)
-		}
-
-		if root.right != nil && root.right.startRange <= queryRange {
-			return QueryRangeData(root.right, queryRange)
-		}
-		return nil
 	}
 
+	if root.data != nil {
+		return root.data
+	}
+
+	if root.left != nil && root.left.endRange > queryRange {
+		return QueryRangeData(root.left, queryRange)
+	}
+
+	if root.right != nil && root.right.startRange <= queryRange {
+		return QueryRangeData(root.right, queryRange)
+	}
+	return nil
 }

@@ -3,10 +3,13 @@ package mdx
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/fatih/color"
 	"github.com/rodaine/table"
 )
 
+// Digest returns a string containing a summary of the Mdict object's metadata and internal structures.
+// This is useful for debugging and understanding the contents of an MDX/MDD file.
 func (mdict *Mdict) Digest() string {
 	outstr := ""
 	outstr += "meta:\n"

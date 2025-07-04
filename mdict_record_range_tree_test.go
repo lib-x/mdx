@@ -2,8 +2,10 @@ package mdx
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/assert"
+	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBuildRangeTree(t *testing.T) {
@@ -39,8 +41,13 @@ func TestBuildRangeTree(t *testing.T) {
 }
 
 func TestBuildRangeTree2(t *testing.T) {
+	path := "./testdata/mdx/testdict.mdx"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skipf("Skipping test because test data file is missing: %s", path)
+	}
+
 	root := new(RecordBlockRangeTreeNode)
-	dict, err := New("./testdata/mdx/testdict.mdx")
+	dict, err := New(path)
 	if err != nil {
 		t.Fatal(err)
 	}

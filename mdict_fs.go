@@ -3,49 +3,47 @@ package mdx
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"strings"
 	"time"
 )
 
-// MdictFS implements the fs.FS interface for MDX/MDD files.
+// ErrWordNotFound is returned when a word is not found in the dictionary.
+var ErrWordNotFound = errors.New("word not found")
+
+// MdictFS wraps an Mdict instance to implement the io/fs.FS interface.
+// This allows an MDX/MDD file to be accessed like a regular file system, for example, for an HTTP file server.
 type MdictFS struct {
-	mdict *MdictBase // MdictBase provides access to dictionary data
+	mdict *Mdict // The Mdict instance provides access to the dictionary data.
 }
 
 // NewMdictFS creates a new MdictFS instance.
-func NewMdictFS(mdict *MdictBase) *MdictFS {
+func NewMdictFS(mdict *Mdict) *MdictFS {
 	if mdict == nil {
-		// Or handle this more gracefully depending on requirements
-		panic("MdictFS: MdictBase cannot be nil")
+		panic("MdictFS: Mdict instance cannot be nil")
 	}
 	return &MdictFS{
 		mdict: mdict,
 	}
 }
 
-// Open opens a file (keyword or resource) from the MDX/MDD.
+// Open opens a file (a keyword or an MDD resource).
 func (mfs *MdictFS) Open(name string) (fs.File, error) {
-	log.Debugf("MdictFS: Open called for name: '%s'", name)
+	log.Debugf("MdictFS: Open called with name: '%s'", name)
 
-	// Clean and normalize the path, similar to http.fs
-	if name == "." || name == "" || strings.HasSuffix(name, "/") { // Treat as directory
-		name = "." // Standardize root directory name
-		// For now, only root directory is explicitly supported as a directory to open.
-		// Subdirectories in MDD are not yet supported for direct Open, only via ReadDir.
-		// If name is not ".", it implies a file lookup.
+	if name == "." || name == "" || strings.HasSuffix(name, "/") {
+		name = "."
 	}
 
-	modTime := time.Now() // Default modification time
-	if mfs.mdict.header != nil && mfs.mdict.header.CreationDate != "" {
-		// Attempt to parse common MDX date formats
-		parsedTime, err := time.Parse("2006-01-02", mfs.mdict.header.CreationDate)
+	modTime := time.Now()
+	if mfs.mdict.meta != nil && mfs.mdict.meta.creationDate != "" {
+		parsedTime, err := time.Parse("2006-01-02", mfs.mdict.meta.creationDate)
 		if err != nil {
-			parsedTime, err = time.Parse("2006.01.02 15:04:05", mfs.mdict.header.CreationDate)
+			parsedTime, err = time.Parse("2006.01.02 15:04:05", mfs.mdict.meta.creationDate)
 			if err != nil {
-				// If specific parsing fails, keep time.Now() or use a fixed default MDX build time
-				log.Warnf("MdictFS: Could not parse CreationDate '%s' for ModTime, using current time.", mfs.mdict.header.CreationDate)
+				log.Warningf("MdictFS: Could not parse CreationDate '%s' for ModTime, using current time.", mfs.mdict.meta.creationDate)
 			} else {
 				modTime = parsedTime
 			}
@@ -60,7 +58,6 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 			name:    ".",
 			isDir:   true,
 			modTime: modTime,
-			// Size for a directory is often 0 or system-dependent.
 		}
 		return &MdictFile{
 			fs:       mfs,
@@ -70,25 +67,18 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 		}, nil
 	}
 
-	// For files (keywords or MDD resources)
 	var fileContent []byte
 	var lookupErr error
-	var actualName = name // The name used for lookup, might be normalized for MDD
 
-	if mfs.mdict.fileType == MdictTypeMdd {
-		log.Debugf("MdictFS: MDD file, attempting to look up resource: '%s'", name)
-		// MDD resource paths are often case-insensitive and use backslashes.
-		// The 'name' from fs.FS is usually forward-slashed.
-		actualName = strings.ReplaceAll(name, "/", "\\")
+	if mfs.mdict.IsMDD() {
+		log.Debugf("MdictFS: MDD file, attempting to find resource: '%s'", name)
+		actualName := strings.ReplaceAll(name, "/", "\\")
 		if !strings.HasPrefix(actualName, "\\") {
 			actualName = "\\" + actualName
 		}
 
-		// This is a placeholder for efficient resource lookup in MDD.
-		// Ideally, MdictBase would have a map for quick path-to-entry lookup for MDDs.
-		// The current linear scan is highly inefficient for large MDDs.
 		var foundEntry *MDictKeywordEntry
-		entries, _ := mfs.mdict.GetKeyWordEntries() // Assuming GetKeyWordEntries is available and safe
+		entries, _ := mfs.mdict.GetKeyWordEntries()
 		for _, entry := range entries {
 			if strings.EqualFold(entry.KeyWord, actualName) {
 				foundEntry = entry
@@ -97,48 +87,47 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 		}
 
 		if foundEntry != nil {
-			log.Debugf("MdictFS: Found MDD entry for '%s' as keyword '%s'", name, foundEntry.KeyWord)
-			fileContent, lookupErr = mfs.mdict.locateByKeywordEntry(foundEntry)
+			log.Debugf("MdictFS: Found MDD entry for '%s' (keyword '%s')", name, foundEntry.KeyWord)
+			fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
 		} else {
 			log.Debugf("MdictFS: MDD resource '%s' (normalized: '%s') not found in keyword entries.", name, actualName)
 			lookupErr = fs.ErrNotExist
 		}
 	} else { // MDX file
 		log.Debugf("MdictFS: MDX file, looking up keyword: '%s'", name)
-		definitions, err := mfs.mdict.Lookup(name) // Lookup is case-sensitive by default
+		definition, err := mfs.mdict.Lookup(name)
 		if err != nil {
-			// Assuming MdictBase.Lookup returns a specific error like ErrWordNotFound
-			if errors.Is(err, ErrWordNotFound) { // Need to ensure ErrWordNotFound is defined and used in MdictBase
+			if errors.Is(err, ErrWordNotFound) || strings.Contains(err.Error(), "not found") {
 				log.Debugf("MdictFS: Keyword '%s' not found in MDX.", name)
 				return nil, fs.ErrNotExist
 			}
 			log.Errorf("MdictFS: Error looking up keyword '%s' in MDX: %v", name, err)
 			return nil, fmt.Errorf("error looking up keyword '%s': %w", name, err)
 		}
-		if len(definitions) == 0 { // Should ideally be covered by ErrWordNotFound
-			log.Debugf("MdictFS: Keyword '%s' found but has no definitions.", name)
+		if len(definition) == 0 {
+			log.Debugf("MdictFS: Keyword '%s' found but has no definition.", name)
 			return nil, fs.ErrNotExist
 		}
-		fileContent = []byte(definitions[0]) // Use the first definition
+		fileContent = definition
 		lookupErr = nil
 		log.Debugf("MdictFS: Found MDX keyword '%s', content length: %d", name, len(fileContent))
 	}
 
 	if lookupErr != nil {
-		if errors.Is(lookupErr, fs.ErrNotExist) || strings.Contains(lookupErr.Error(), "not found") { // Heuristic
+		if errors.Is(lookupErr, fs.ErrNotExist) {
 			return nil, fs.ErrNotExist
 		}
-		log.Errorf("MdictFS: Error retrieving content for '%s': %v", name, lookupErr)
-		return nil, fmt.Errorf("error retrieving content for '%s': %w", name, lookupErr)
+		log.Errorf("MdictFS: Error getting content for '%s': %v", name, lookupErr)
+		return nil, fmt.Errorf("error getting content for '%s': %w", name, lookupErr)
 	}
 
-	if fileContent == nil { // Safeguard
-		log.Warnf("MdictFS: Content for '%s' is nil after successful lookup, treating as not found.", name)
+	if fileContent == nil {
+		log.Warningf("MdictFS: Content for '%s' is nil after successful lookup, treating as not found.", name)
 		return nil, fs.ErrNotExist
 	}
 
 	fileInfo := &MdictFileInfo{
-		name:    path.Base(name), // Use base name for FileInfo, as fs.FileInfo expects.
+		name:    path.Base(name),
 		size:    int64(len(fileContent)),
 		isDir:   false,
 		modTime: modTime,
@@ -146,7 +135,7 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 
 	return &MdictFile{
 		fs:       mfs,
-		name:     name, // Store the full path used to open
+		name:     name,
 		isDir:    false,
 		content:  fileContent,
 		reader:   bytes.NewReader(fileContent),
@@ -154,32 +143,30 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 	}, nil
 }
 
-// MdictFile implements fs.File for a keyword's definition or an MDD resource.
+// MdictFile implements the fs.File interface.
 type MdictFile struct {
 	fs       *MdictFS
-	name     string // The name this file was opened with.
+	name     string
 	isDir    bool
-	reader   *bytes.Reader // Used for Read, Seek, ReadAt for files. Nil for directories.
-	content  []byte        // Content of the file (definition or resource). Nil for directories.
-	fileInfo fs.FileInfo   // Cached FileInfo.
+	reader   *bytes.Reader
+	content  []byte
+	fileInfo fs.FileInfo
 }
 
-// Stat returns the FileInfo structure describing the file.
+// Stat returns the FileInfo for the file.
 func (mf *MdictFile) Stat() (fs.FileInfo, error) {
 	if mf.fileInfo == nil {
-		// This should ideally be initialized by Open. This is a fallback.
-		log.Warnf("MdictFile.Stat: fileInfo is nil for '%s', creating default.", mf.name)
+		log.Warningf("MdictFile.Stat: fileInfo is nil for '%s', creating default.", mf.name)
 		modTime := time.Now()
-		if mf.fs.mdict.header != nil && mf.fs.mdict.header.CreationDate != "" {
-			parsedTime, err := time.Parse("2006-01-02", mf.fs.mdict.header.CreationDate)
+		if mf.fs.mdict.meta != nil && mf.fs.mdict.meta.creationDate != "" {
+			parsedTime, err := time.Parse("2006-01-02", mf.fs.mdict.meta.creationDate)
 			if err == nil {
 				modTime = parsedTime
 			}
-			// Add other parsing attempts if needed
 		}
 		mf.fileInfo = &MdictFileInfo{
 			name:    path.Base(mf.name),
-			size:    int64(len(mf.content)), // Size is 0 if content is nil (e.g. for a directory file opened not via Open("."))
+			size:    int64(len(mf.content)),
 			isDir:   mf.isDir,
 			modTime: modTime,
 		}
@@ -187,35 +174,32 @@ func (mf *MdictFile) Stat() (fs.FileInfo, error) {
 	return mf.fileInfo, nil
 }
 
-// Read reads up to len(b) bytes into b.
+// Read reads up to len(b) bytes from the file.
 func (mf *MdictFile) Read(b []byte) (int, error) {
 	if mf.isDir {
 		log.Debugf("MdictFile.Read: Attempt to read directory '%s'", mf.name)
-		return 0, &fs.PathError{Op: "read", Path: mf.name, Err: fs.ErrIsDir}
+		return 0, &fs.PathError{Op: "read", Path: mf.name, Err: errors.New("is a directory")}
 	}
 	if mf.reader == nil {
-		log.Warnf("MdictFile.Read: No reader available for file '%s' (possibly closed or not a regular file).", mf.name)
-		return 0, &fs.PathError{Op: "read", Path: mf.name, Err: fs.ErrClosed} // fs.ErrClosed is a reasonable guess
+		log.Warningf("MdictFile.Read: No reader available for file '%s' (might be closed or not a regular file).", mf.name)
+		return 0, &fs.PathError{Op: "read", Path: mf.name, Err: fs.ErrClosed}
 	}
 	return mf.reader.Read(b)
 }
 
-// Close closes the file. For MdictFile, this means releasing the byte slice and reader.
+// Close closes the file.
 func (mf *MdictFile) Close() error {
 	log.Debugf("MdictFile.Close: Closing file '%s'", mf.name)
 	mf.reader = nil
-	mf.content = nil  // Allow GC
-	mf.fileInfo = nil // Invalidate cached FileInfo
+	mf.content = nil
+	mf.fileInfo = nil
 	return nil
 }
 
-// Seek sets the offset for the next Read or Write on file to offset, interpreted
-// according to whence: 0 means relative to the origin of the file, 1 means
-// relative to the current offset, and 2 means relative to the end.
-// It returns the new offset and an error, if any.
+// Seek sets the offset for the next Read or Write on the file.
 func (mf *MdictFile) Seek(offset int64, whence int) (int64, error) {
 	if mf.isDir {
-		return 0, &fs.PathError{Op: "seek", Path: mf.name, Err: fs.ErrIsDir}
+		return 0, &fs.PathError{Op: "seek", Path: mf.name, Err: errors.New("is a directory")}
 	}
 	if mf.reader == nil {
 		return 0, &fs.PathError{Op: "seek", Path: mf.name, Err: fs.ErrClosed}
@@ -223,7 +207,7 @@ func (mf *MdictFile) Seek(offset int64, whence int) (int64, error) {
 	return mf.reader.Seek(offset, whence)
 }
 
-// MdictFileInfo implements fs.FileInfo.
+// MdictFileInfo implements the fs.FileInfo interface.
 type MdictFileInfo struct {
 	name    string
 	size    int64
@@ -231,47 +215,47 @@ type MdictFileInfo struct {
 	modTime time.Time
 }
 
-func (mfi *MdictFileInfo) Name() string       { return mfi.name }
-func (mfi *MdictFileInfo) Size() int64        { return mfi.size }
-func (mfi *MdictFileInfo) IsDir() bool        { return mfi.isDir }
+// Name returns the base name of the file.
+func (mfi *MdictFileInfo) Name() string { return mfi.name }
+
+// Size returns the length in bytes for regular files.
+func (mfi *MdictFileInfo) Size() int64 { return mfi.size }
+
+// IsDir reports whether mfi describes a directory.
+func (mfi *MdictFileInfo) IsDir() bool { return mfi.isDir }
+
+// ModTime returns the modification time.
 func (mfi *MdictFileInfo) ModTime() time.Time { return mfi.modTime }
-func (mfi *MdictFileInfo) Sys() interface{}   { return nil }
+
+// Sys returns underlying data source (can be nil).
+func (mfi *MdictFileInfo) Sys() interface{} { return nil }
+
+// Info returns the FileInfo for the file.
+func (mfi *MdictFileInfo) Info() (fs.FileInfo, error) { return mfi, nil }
+
+// Type returns the file's type.
+func (mfi *MdictFileInfo) Type() fs.FileMode { return mfi.Mode().Type() }
 
 // Mode returns the file mode bits.
 func (mfi *MdictFileInfo) Mode() fs.FileMode {
 	if mfi.isDir {
-		return fs.ModeDir | 0555 // r-xr-xr-x (directory)
+		return fs.ModeDir | 0555
 	}
-	return 0444 // r--r--r-- (regular file, read-only)
+	return 0444
 }
 
-// Ensure MdictFile implements fs.File and io.ReadSeeker (via bytes.Reader).
 var _ fs.File = (*MdictFile)(nil)
-var _ fs.ReadDirFile = (*MdictFile)(nil) // ReadDir will be added next
-
-// Ensure MdictFS implements fs.FS
+var _ fs.ReadDirFile = (*MdictFile)(nil)
 var _ fs.FS = (*MdictFS)(nil)
 
 // ReadDir reads the contents of the directory.
-// For MdictFS, this is only implemented for the root directory ".".
 func (mf *MdictFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	if !mf.isDir || mf.name != "." {
-		log.Warnf("ReadDir called on non-root or non-directory MdictFile: %s", mf.name)
+		log.Warningf("ReadDir called on non-root or non-directory MdictFile: %s", mf.name)
 		return nil, &fs.PathError{Op: "readdir", Path: mf.name, Err: errors.New("not a directory or not root")}
 	}
 
 	log.Debugf("ReadDir called for MdictFS root: %s", mf.fs.mdict.filePath)
-
-	// For the root directory, list all keywords/resources as DirEntry items.
-	// This could be very large. `n` parameter is for batching but often ignored by simple impls.
-	// We'll fetch all and then slice if n > 0.
-
-	// This assumes GetKeyWordEntries returns all "files" at the root for MDX
-	// or all resource paths for MDD.
-	// For MDD, paths might have subdirectories (e.g., \sound\foo.spx).
-	// A simple approach is to list all unique first-level path components as directories,
-	// and all full paths as files. This can get complex.
-	// For now, let's list all keywords/paths as files in the root.
 
 	keywords, err := mf.fs.mdict.GetKeyWordEntries()
 	if err != nil {
@@ -279,75 +263,41 @@ func (mf *MdictFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		return nil, fmt.Errorf("could not get keyword entries: %w", err)
 	}
 
-	modTime := time.Now() // Default mod time for entries
-	if mf.fs.mdict.header != nil && mf.fs.mdict.header.CreationDate != "" {
-		// Attempt to parse common MDX date formats
-		parsedTime, ptErr := time.Parse("2006-01-02", mf.fs.mdict.header.CreationDate)
+	modTime := time.Now()
+	if mf.fs.mdict.meta != nil && mf.fs.mdict.meta.creationDate != "" {
+		parsedTime, ptErr := time.Parse("2006-01-02", mf.fs.mdict.meta.creationDate)
 		if ptErr == nil {
 			modTime = parsedTime
 		} else {
-			parsedTime, ptErr = time.Parse("2006.01.02 15:04:05", mf.fs.mdict.header.CreationDate)
+			parsedTime, ptErr = time.Parse("2006.01.02 15:04:05", mf.fs.mdict.meta.creationDate)
 			if ptErr == nil {
 				modTime = parsedTime
 			}
 		}
 	}
 
-
 	entries := make([]fs.DirEntry, 0, len(keywords))
-	for _, kw := entry {
-		// For MDD, keywords might be paths like \SOUND\BELL.SPX
-		// For fs.DirEntry, Name() should be the base name.
+	for _, kw := range keywords {
 		entryName := kw.KeyWord
-		isDir := false // Assume all keywords are files unless we parse paths
+		isDir := false
 
-		if mf.fs.mdict.fileType == MdictTypeMdd {
+		if mf.fs.mdict.IsMDD() {
 			entryName = strings.TrimLeft(kw.KeyWord, "\\/")
-			// If entryName still contains path separators, it implies a structure.
-			// However, fs.ReadDir lists entries at the current level.
-			// A full fs.Sub / walking FS would need more complex path handling.
-			// For now, we list all MDD keywords as files at the root.
-			// A more advanced implementation might create virtual directories.
 		}
-		
-		// We don't have individual file sizes without looking them up,
-		// which is too expensive for ReadDir. fs.FileInfo returned by DirEntry.Info()
-		// can provide it, but DirEntry itself can return a simplified FileInfo.
-		// Size is often set to 0 for ReadDir results if not readily available.
-		
-		// To get the actual size, we'd need to "Open" and "Stat" each file, which is not performant here.
-		// So, MdictDirEntry will likely return a FileInfo with size 0 or an estimated size.
-		// For now, let's create a MdictFileInfo that might have 0 size.
-		// The Stat() method on the *opened* MdictFile will have the correct size.
-		
+
 		dirEntryInfo := &MdictFileInfo{
-			name:    path.Base(entryName), // Base name for DirEntry
-			size:    0,                    // Size is typically 0 or unknown for ReadDir entries
+			name:    path.Base(entryName),
+			size:    0,
 			isDir:   isDir,
 			modTime: modTime,
 		}
-		entries = append(entries, dirEntryInfo) // MdictFileInfo implements fs.DirEntry via fs.FileInfo
+		entries = append(entries, dirEntryInfo)
 	}
 
-	// Handle 'n' parameter for batching if desired, though many fs.FS impls ignore it for simplicity.
 	if n > 0 && n < len(entries) {
 		entries = entries[:n]
 	}
-	// If n <= 0, return all entries. If n > 0 and all entries are returned, return io.EOF.
-	// This part is tricky. Most simple FS implementations return all and then io.EOF next call if n was > 0.
-	// Or just return all if n <= 0.
-	// For now, if n > 0 and we returned fewer than requested (i.e. all of them), no EOF.
-	// If n > 0 and we returned n entries, and there are more, no EOF.
-	// If n > 0 and we returned all entries and that's less than n, no EOF.
-	// The common contract is to return io.EOF when no more entries are available.
-	// This simple implementation returns all entries in one go.
-	// A stateful MdictFile would be needed to handle 'n' correctly over multiple calls.
-	// For now, this is a non-batching ReadDir.
-	// A truly stateful ReadDir would store the current offset in mf.keywordsRead
-	// and return slices. For simplicity, we return all.
-	// If we return all entries, and n > 0, subsequent calls with n > 0 should yield io.EOF.
-	// This is not handled here yet.
 
 	log.Debugf("ReadDir for '%s' returning %d entries", mf.name, len(entries))
-	return entries, nil // Return nil error, not io.EOF, if entries are returned.
+	return entries, nil
 }

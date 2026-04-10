@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	mdx "mdx"
@@ -63,11 +65,16 @@ func main() {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<html><body>
-<form action="/entry" method="get">
-  <input type="text" name="word" placeholder="enter word" />
+<h1>%s</h1>
+<form action="/search" method="get">
+  <input type="text" name="prefix" placeholder="search prefix" />
+  <button type="submit">Search</button>
+</form>
+<form action="/entry" method="get" style="margin-top:1rem;">
+  <input type="text" name="word" placeholder="exact word" />
   <button type="submit">Lookup</button>
 </form>
-</body></html>`)
+</body></html>`, html.EscapeString(info.Title))
 	})
 
 	mux.HandleFunc("/entry", func(w http.ResponseWriter, r *http.Request) {
@@ -100,9 +107,12 @@ func main() {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, "<html><body><h1>Search: %s</h1><ul>", html.EscapeString(prefix))
 		for _, match := range matches {
-			_, _ = fmt.Fprintln(w, match.Keyword)
+			_, _ = fmt.Fprintf(w, `<li><a href="/entry?word=%s">%s</a></li>`, url.QueryEscape(match.Keyword), html.EscapeString(match.Keyword))
 		}
+		_, _ = fmt.Fprint(w, `</ul><p><a href="/">Back</a></p></body></html>`)
 	})
 
 	log.Printf("serving redis-backed entry UI on %s", *listen)

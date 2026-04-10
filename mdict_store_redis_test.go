@@ -94,6 +94,11 @@ func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, matches, 2)
 
+	resourceMatches, err := store.PrefixSearch("demo", `\acc`, 10)
+	require.NoError(t, err)
+	require.Len(t, resourceMatches, 1)
+	assert.True(t, resourceMatches[0].IsResource)
+
 	_, err = store.GetExact("demo", "missing")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrIndexMiss))

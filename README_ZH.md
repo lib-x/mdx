@@ -268,6 +268,16 @@ go run ./examples/http-server \
   --listen :8080
 ```
 
+另外还提供了 Redis 版联动示例：
+
+```bash
+go run ./examples/http-server-redis \
+  --mdx /path/to/dictionary.mdx \
+  --mdd /path/to/dictionary.mdd \
+  --redis 127.0.0.1:6379 \
+  --listen :8080
+```
+
 ## 贡献
 
 欢迎提交问题（Issues）和拉取请求（Pull Requests）。

@@ -267,6 +267,16 @@ go run ./examples/http-server \
   --listen :8080
 ```
 
+A Redis-backed variant is also available:
+
+```bash
+go run ./examples/http-server-redis \
+  --mdx /path/to/dictionary.mdx \
+  --mdd /path/to/dictionary.mdd \
+  --redis 127.0.0.1:6379 \
+  --listen :8080
+```
+
 ## Contributing
 
 Issues and Pull Requests are welcome.

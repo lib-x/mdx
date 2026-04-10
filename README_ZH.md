@@ -301,3 +301,24 @@ MDX_TESTDICT_DIR="/path/to/local/dictionary-dir" go test ./... -run "TestIntegra
 ## 模糊搜索
 
 现在已经提供第一版内存参考实现 `MemoryFuzzyIndexStore`，适合测试和演示；生产环境的模糊搜索仍建议放在外部存储或搜索服务中。
+
+## 多词典管理层
+
+现在提供了一个多词典注册层，适用于一个目录中放置很多 `.mdx` / `.mdd` 配对文件的场景。
+
+核心 API：
+- `ScanDirectory(root string)`
+- `DictionaryRegistry`
+- `OpenDictionary(id string)`
+- `LibrarySearch(query, limit)`
+
+可运行示例：
+
+```bash
+go run ./examples/http-library --root /path/to/dictionaries --listen :8080
+```
+
+路由：
+- `/dict/{id}/entry?word=...`
+- `/dict/{id}/assets/...`
+- `/library/search?q=...`

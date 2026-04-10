@@ -301,3 +301,24 @@ This project is licensed under the [GNU General Public License v3.0](LICENSE).
 ## Fuzzy Search
 
 A first in-memory fuzzy reference implementation is now available as `MemoryFuzzyIndexStore`. It is suitable for tests and demos, while production fuzzy search should still live in an external store/service.
+
+## Dictionary Library
+
+A multi-dictionary registry is available for directories containing many `.mdx` / `.mdd` pairs.
+
+Core APIs:
+- `ScanDirectory(root string)`
+- `DictionaryRegistry`
+- `OpenDictionary(id string)`
+- `LibrarySearch(query, limit)`
+
+Runnable example:
+
+```bash
+go run ./examples/http-library --root /path/to/dictionaries --listen :8080
+```
+
+Routes:
+- `/dict/{id}/entry?word=...`
+- `/dict/{id}/assets/...`
+- `/library/search?q=...`

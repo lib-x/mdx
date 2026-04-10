@@ -45,7 +45,11 @@ func main() {
 
 	client := redis.NewClient(&redis.Options{Addr: *redisAddr})
 	defer client.Close()
-	store := mdx.NewRedisIndexStoreWithContext(context.Background(), client)
+	store := mdx.NewRedisIndexStore(client,
+		mdx.WithRedisIndexContext(context.Background()),
+		mdx.WithRedisKeyPrefix("mdx:index"),
+		mdx.WithRedisPrefixIndexMaxLen(8),
+	)
 
 	info := mdxDict.DictionaryInfo()
 	entries, err := mdxDict.ExportEntries()

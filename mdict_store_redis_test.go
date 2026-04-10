@@ -10,14 +10,16 @@ import (
 )
 
 type fakeRedisBackend struct {
-	kv   map[string]string
-	sets map[string]map[string]struct{}
+	kv        map[string]string
+	sets      map[string]map[string]struct{}
+	saddCalls map[string]int
 }
 
 func newFakeRedisBackend() *fakeRedisBackend {
 	return &fakeRedisBackend{
-		kv:   make(map[string]string),
-		sets: make(map[string]map[string]struct{}),
+		kv:        make(map[string]string),
+		sets:      make(map[string]map[string]struct{}),
+		saddCalls: make(map[string]int),
 	}
 }
 
@@ -35,6 +37,7 @@ func (f *fakeRedisBackend) Get(_ context.Context, key string) (string, error) {
 }
 
 func (f *fakeRedisBackend) SAdd(_ context.Context, key string, members ...string) error {
+	f.saddCalls[key]++
 	if _, ok := f.sets[key]; !ok {
 		f.sets[key] = make(map[string]struct{})
 	}
@@ -60,6 +63,7 @@ func (f *fakeRedisBackend) Del(_ context.Context, keys ...string) error {
 	for _, key := range keys {
 		delete(f.kv, key)
 		delete(f.sets, key)
+		delete(f.saddCalls, key)
 	}
 	return nil
 }
@@ -67,11 +71,13 @@ func (f *fakeRedisBackend) Del(_ context.Context, keys ...string) error {
 func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
 	t.Parallel()
 
-	store := &RedisIndexStore{
-		ctx:     context.Background(),
-		prefix:  "test:index",
-		backend: newFakeRedisBackend(),
-	}
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil,
+		WithRedisIndexContext(context.Background()),
+		WithRedisKeyPrefix("test:index"),
+		WithRedisPrefixIndexMaxLen(4),
+	)
+	store.backend = backend
 
 	info := DictionaryInfo{Name: "demo"}
 	entries := []IndexEntry{
@@ -81,6 +87,8 @@ func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
 	}
 
 	require.NoError(t, store.Put(info, entries))
+	assert.Equal(t, 4, store.prefixIndexMaxLen)
+	assert.Equal(t, "test:index", store.prefix)
 
 	entry, err := store.GetExact("demo", "ability")
 	require.NoError(t, err)
@@ -102,4 +110,29 @@ func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
 	_, err = store.GetExact("demo", "missing")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrIndexMiss))
+}
+
+func TestRedisIndexStorePut_BatchesMembersPerPrefix(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil,
+		WithRedisIndexContext(context.Background()),
+		WithRedisKeyPrefix("batch:index"),
+		WithRedisPrefixIndexMaxLen(3),
+	)
+	store.backend = backend
+
+	info := DictionaryInfo{Name: "demo"}
+	entries := []IndexEntry{
+		{Keyword: "ability"},
+		{Keyword: "able"},
+	}
+
+	require.NoError(t, store.Put(info, entries))
+
+	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:a"])
+	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:ab"])
+	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:abi"])
+	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:abl"])
 }

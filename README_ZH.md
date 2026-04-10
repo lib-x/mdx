@@ -297,3 +297,7 @@ MDX_TESTDICT_DIR="/path/to/local/dictionary-dir" go test ./... -run "TestIntegra
 ## 许可
 
 本项目基于 [GNU General Public License v3.0](LICENSE) 授权。
+
+## 模糊搜索
+
+现在已经提供第一版内存参考实现 `MemoryFuzzyIndexStore`，适合测试和演示；生产环境的模糊搜索仍建议放在外部存储或搜索服务中。

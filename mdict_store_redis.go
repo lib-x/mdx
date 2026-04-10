@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const redisPrefixIndexMaxLen = 8
+const defaultRedisPrefixIndexMaxLen = 8
 
 type redisIndexBackend interface {
 	Set(ctx context.Context, key, value string) error
@@ -58,25 +58,56 @@ func (r *redisIndexBackendAdapter) Del(ctx context.Context, keys ...string) erro
 	return r.client.Del(ctx, keys...).Err()
 }
 
+// RedisIndexStoreOption customizes RedisIndexStore construction.
+type RedisIndexStoreOption func(*RedisIndexStore)
+
+// WithRedisIndexContext overrides the store context.
+func WithRedisIndexContext(ctx context.Context) RedisIndexStoreOption {
+	return func(store *RedisIndexStore) {
+		if ctx != nil {
+			store.ctx = ctx
+		}
+	}
+}
+
+// WithRedisKeyPrefix overrides the Redis key namespace prefix.
+func WithRedisKeyPrefix(prefix string) RedisIndexStoreOption {
+	return func(store *RedisIndexStore) {
+		if strings.TrimSpace(prefix) != "" {
+			store.prefix = prefix
+		}
+	}
+}
+
+// WithRedisPrefixIndexMaxLen overrides the maximum stored prefix length.
+func WithRedisPrefixIndexMaxLen(maxLen int) RedisIndexStoreOption {
+	return func(store *RedisIndexStore) {
+		if maxLen > 0 {
+			store.prefixIndexMaxLen = maxLen
+		}
+	}
+}
+
 // RedisIndexStore is a Redis-backed reference implementation of IndexStore.
 type RedisIndexStore struct {
-	ctx     context.Context
-	prefix  string
-	backend redisIndexBackend
+	ctx               context.Context
+	prefix            string
+	prefixIndexMaxLen int
+	backend           redisIndexBackend
 }
 
-// NewRedisIndexStore creates a Redis-backed store with context.Background().
-func NewRedisIndexStore(client *redis.Client) *RedisIndexStore {
-	return NewRedisIndexStoreWithContext(context.Background(), client)
-}
-
-// NewRedisIndexStoreWithContext creates a Redis-backed store with an explicit context.
-func NewRedisIndexStoreWithContext(ctx context.Context, client *redis.Client) *RedisIndexStore {
-	return &RedisIndexStore{
-		ctx:     ctx,
-		prefix:  "mdx:index",
-		backend: &redisIndexBackendAdapter{client: client},
+// NewRedisIndexStore creates a Redis-backed store.
+func NewRedisIndexStore(client *redis.Client, opts ...RedisIndexStoreOption) *RedisIndexStore {
+	store := &RedisIndexStore{
+		ctx:               context.Background(),
+		prefix:            "mdx:index",
+		prefixIndexMaxLen: defaultRedisPrefixIndexMaxLen,
+		backend:           &redisIndexBackendAdapter{client: client},
 	}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store
 }
 
 func (s *RedisIndexStore) dictKeysSetKey(dictionaryName string) string {
@@ -93,31 +124,6 @@ func (s *RedisIndexStore) dictExactKey(dictionaryName, keyword string) string {
 
 func (s *RedisIndexStore) dictPrefixSetKey(dictionaryName, prefix string) string {
 	return s.prefix + ":" + dictionaryName + ":prefix:" + prefix
-}
-
-func indexStoreLookupKey(entry IndexEntry) string {
-	if entry.IsResource && entry.NormalizedKeyword != "" {
-		return entry.NormalizedKeyword
-	}
-	return entry.Keyword
-}
-
-func prefixCandidatesForKey(key string) []string {
-	key = strings.ToLower(strings.TrimSpace(key))
-	if key == "" {
-		return nil
-	}
-
-	limit := redisPrefixIndexMaxLen
-	if len(key) < limit {
-		limit = len(key)
-	}
-
-	out := make([]string, 0, limit)
-	for i := 1; i <= limit; i++ {
-		out = append(out, key[:i])
-	}
-	return out
 }
 
 // Put stores dictionary metadata and index entries in Redis.
@@ -148,9 +154,8 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 	}
 
 	registry := make([]string, 0, len(entries))
-	prefixSetKeys := make([]string, 0)
-	seen := make(map[string]struct{}, len(entries))
-	seenPrefixSets := make(map[string]struct{})
+	seenKeys := make(map[string]struct{}, len(entries))
+	prefixMembers := make(map[string][]string)
 	for _, entry := range entries {
 		key := indexStoreLookupKey(entry)
 		if strings.TrimSpace(key) == "" {
@@ -164,22 +169,15 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 		if err := s.backend.Set(s.ctx, s.dictExactKey(info.Name, key), string(payload)); err != nil {
 			return err
 		}
-		if _, ok := seen[key]; ok {
-		} else {
-			seen[key] = struct{}{}
-			registry = append(registry, key)
-		}
 
-		for _, prefix := range prefixCandidatesForKey(key) {
-			prefixKey := s.dictPrefixSetKey(info.Name, prefix)
-			if err := s.backend.SAdd(s.ctx, prefixKey, key); err != nil {
-				return err
+		if _, ok := seenKeys[key]; !ok {
+			seenKeys[key] = struct{}{}
+			registry = append(registry, key)
+
+			for _, prefix := range prefixCandidatesForKey(key, s.prefixIndexMaxLen) {
+				prefixKey := s.dictPrefixSetKey(info.Name, prefix)
+				prefixMembers[prefixKey] = append(prefixMembers[prefixKey], key)
 			}
-			if _, ok := seenPrefixSets[prefixKey]; ok {
-				continue
-			}
-			seenPrefixSets[prefixKey] = struct{}{}
-			prefixSetKeys = append(prefixSetKeys, prefixKey)
 		}
 	}
 
@@ -188,14 +186,20 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 			return err
 		}
 	}
-	if len(prefixSetKeys) > 0 {
+
+	if len(prefixMembers) > 0 {
+		prefixSetKeys := make([]string, 0, len(prefixMembers))
+		for prefixKey, members := range prefixMembers {
+			if err := s.backend.SAdd(s.ctx, prefixKey, members...); err != nil {
+				return err
+			}
+			prefixSetKeys = append(prefixSetKeys, prefixKey)
+		}
 		if err := s.backend.SAdd(s.ctx, prefixRegistry, prefixSetKeys...); err != nil {
 			return err
 		}
 	}
-	if len(registry) == 0 && len(prefixSetKeys) == 0 {
-		return nil
-	}
+
 	return nil
 }
 
@@ -215,9 +219,11 @@ func (s *RedisIndexStore) GetExact(dictionaryName, keyword string) (IndexEntry, 
 
 // PrefixSearch returns entries that share the supplied prefix.
 func (s *RedisIndexStore) PrefixSearch(dictionaryName, prefix string, limit int) ([]IndexEntry, error) {
-	prefixLower := strings.ToLower(prefix)
-	var keys []string
-	var err error
+	prefixLower := strings.ToLower(strings.TrimSpace(prefix))
+	var (
+		keys []string
+		err  error
+	)
 
 	if prefixLower == "" {
 		keys, err = s.backend.SMembers(s.ctx, s.dictKeysSetKey(dictionaryName))
@@ -226,8 +232,8 @@ func (s *RedisIndexStore) PrefixSearch(dictionaryName, prefix string, limit int)
 		}
 	} else {
 		lookupPrefix := prefixLower
-		if len(lookupPrefix) > redisPrefixIndexMaxLen {
-			lookupPrefix = lookupPrefix[:redisPrefixIndexMaxLen]
+		if len(lookupPrefix) > s.prefixIndexMaxLen {
+			lookupPrefix = lookupPrefix[:s.prefixIndexMaxLen]
 		}
 		keys, err = s.backend.SMembers(s.ctx, s.dictPrefixSetKey(dictionaryName, lookupPrefix))
 		if err != nil {

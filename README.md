@@ -297,3 +297,7 @@ Without local fixtures, external integration tests will skip automatically.
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
+
+## Fuzzy Search
+
+A first in-memory fuzzy reference implementation is now available as `MemoryFuzzyIndexStore`. It is suitable for tests and demos, while production fuzzy search should still live in an external store/service.

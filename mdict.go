@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/op/go-logging"
@@ -89,6 +88,7 @@ func (mdict *Mdict) BuildIndex() error {
 	}
 
 	mdict.buildRecordRangeTree()
+	mdict.buildExactLookup()
 
 	return nil
 }
@@ -142,22 +142,22 @@ func (mdict *Mdict) IsUTF16() bool {
 }
 
 // Lookup finds the definition for a given word.
-// It uses binary search for efficiency, with a time complexity of O(log n).
 func (mdict *Mdict) Lookup(word string) ([]byte, error) {
 	word = strings.TrimSpace(word)
-	entries := mdict.keyBlockData.keyEntries
-	i := sort.Search(len(entries), func(i int) bool {
-		// Note: This comparison depends on the keyword sorting rules in the MDict file.
-		// For most dictionaries, this should be effective.
-		return entries[i].KeyWord >= word
-	})
-
-	if i < len(entries) && entries[i].KeyWord == word {
-		log.Infof("mdict.Lookup hit entry [%d/%d] key:(%s)", i, len(entries), word)
-		return mdict.LocateByKeywordEntry(entries[i])
+	if word == "" {
+		return nil, fmt.Errorf("word not found: (%s)", word)
+	}
+	if mdict.exactLookup == nil {
+		return nil, fmt.Errorf("word not found: (%s)", word)
 	}
 
-	return nil, fmt.Errorf("word not found: (%s)", word)
+	entry, ok := mdict.exactLookup[word]
+	if !ok {
+		return nil, fmt.Errorf("word not found: (%s)", word)
+	}
+
+	log.Infof("mdict.Lookup hit key:(%s)", word)
+	return mdict.LocateByKeywordEntry(entry)
 }
 
 // LocateByKeywordEntry locates and returns the definition by keyword entry.

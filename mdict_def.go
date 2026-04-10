@@ -66,6 +66,7 @@ type MdictBase struct {
 	//RecordBlockData *MDictRecordBlockData
 
 	rangeTreeRoot *RecordBlockRangeTreeNode
+	exactLookup   map[string]*MDictKeywordEntry
 }
 
 /********************************

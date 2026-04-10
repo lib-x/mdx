@@ -6,7 +6,7 @@ This library was originally based on the [terasum/medict](https://github.com/ter
 
 ## Features
 
-- **High-Performance Queries**: Uses a binary search algorithm for fast O(log n) complexity queries of keywords.
+- **High-Performance Queries**: Builds an in-memory exact-match index after `BuildIndex()` for stable fast lookups.
 - **MDX/MDD Support**: Supports both .mdx (text dictionaries) and .mdd (resource files) formats.
 - **Standard Interface**: Implements the `io/fs.FS` interface, allowing dictionaries to be easily served as a file system.
 - **Robust Error Handling**: Comprehensive error handling and logging.
@@ -71,6 +71,78 @@ func main() {
 }
 ```
 
+### Example 1.1: Exporting an External Index
+
+If you want to store the index in Redis, SQL, or another external system, export the index entries and store them yourself. Later, load one entry back and resolve it to the real definition.
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/lib-x/mdx"
+)
+
+func main() {
+	dict, err := mdx.New("path/to/your/dictionary.mdx")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := dict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	info := dict.DictionaryInfo()
+	fmt.Printf("title=%s entries=%d\n", info.Title, info.EntryCount)
+
+	entries, err := dict.ExportIndex()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Store entries in Redis / DB here.
+	first := entries[0]
+
+	content, err := dict.Resolve(first)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("resolved %q -> %d bytes\n", first.Keyword, len(content))
+}
+```
+
+### Example 1.2: Explicitly Splitting Dictionary Entries and Resource Entries
+
+```go
+mdxDict, _ := mdx.New("path/to/dictionary.mdx")
+_ = mdxDict.BuildIndex()
+entries, _ := mdxDict.ExportEntries()
+
+mddDict, _ := mdx.New("path/to/dictionary.mdd")
+_ = mddDict.BuildIndex()
+resources, _ := mddDict.ExportResources()
+
+fmt.Println(len(entries), len(resources))
+```
+
+### Example 1.3: Storing the Exported Index in an External Store
+
+The library now exposes a minimal `IndexStore` boundary. You can implement it for Redis, SQL, or another backend. A small in-memory example is included:
+
+```go
+store := mdx.NewMemoryIndexStore()
+
+info := dict.DictionaryInfo()
+entries, _ := dict.ExportEntries()
+_ = store.Put(info, entries)
+
+entry, _ := store.GetExact(info.Name, "ability")
+content, _ := dict.Resolve(entry)
+fmt.Println(len(content))
+```
+
 ### Example 2: Listing MDD Resource Files
 
 MDD files typically contain resources like audio and images. The following example shows how to list all resources in an MDD file.
@@ -116,9 +188,101 @@ func main() {
 }
 ```
 
+### Example 3: Extracting Resource References from MDX Content
+
+MDX entries often contain references to CSS, JavaScript, image, and audio resources that are actually stored in the companion MDD file.
+
+```go
+definition, err := mdict.Lookup("accordion")
+if err != nil {
+	log.Fatal(err)
+}
+
+refs := mdx.ExtractResourceRefs(definition)
+for _, ref := range refs {
+	fmt.Println(ref)
+}
+
+fmt.Println(mdx.NormalizeMDDKey("accordion_concertina.jpg"))
+// Output: \accordion_concertina.jpg
+```
+
+### Example 4: Serving MDX HTML and MDD Assets over Go HTTP
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/lib-x/mdx"
+)
+
+func main() {
+	mdxDict, err := mdx.New("path/to/dictionary.mdx")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := mdxDict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	mddDict, err := mdx.New("path/to/dictionary.mdd")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := mddDict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	http.Handle("/assets/", http.StripPrefix("/assets/", mdx.NewAssetHandler(mddDict)))
+
+	http.HandleFunc("/entry", func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		content, err := mdx.LookupAndRewriteHTML(mdxDict, word, "/assets")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(content)
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+`LookupAndRewriteHTML` rewrites references such as:
+- `oalecd9.css` -> `/assets/oalecd9.css`
+- `thumb_accordion.jpg` -> `/assets/thumb_accordion.jpg`
+- `snd://ability__gb_1.spx` -> `/assets/snd:%2F%2Fability__gb_1.spx`
+
+A runnable demo is available at `examples/http-server`:
+
+```bash
+go run ./examples/http-server \
+  --mdx /path/to/dictionary.mdx \
+  --mdd /path/to/dictionary.mdd \
+  --listen :8080
+```
+
 ## Contributing
 
 Issues and Pull Requests are welcome.
+
+
+## Local fixture tests
+
+Real `.mdx` / `.mdd` fixtures are **not** stored in this repository.
+
+Set `MDX_TESTDICT_DIR` to a local directory containing the external fixture pair, for example:
+
+```bash
+MDX_TESTDICT_DIR="/path/to/local/dictionary-dir" go test ./... -run "TestIntegration|TestMdict|TestMdictFS" -v
+```
+
+Without local fixtures, external integration tests will skip automatically.
 
 ## License
 

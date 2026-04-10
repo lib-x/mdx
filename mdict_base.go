@@ -42,7 +42,7 @@ func (mdict *MdictBase) readDictHeader() error {
 	// Note: The checksum is calculated on the headerInfo string after UTF-8 conversion and string replacement.
 	// This is to maintain compatibility with the behavior of some MDict generation tools.
 	log.Debugf("Verifying header checksum for '%s'. Expected: %d", mdict.filePath, dictHeader.adler32Checksum)
-	checksum := adler32.Checksum([]byte(dictHeader.headerInfo))
+	checksum := adler32.Checksum(dictHeader.headerInfoBytes)
 	if checksum != dictHeader.adler32Checksum {
 		// In some dictionaries, this checksum may not match, but the dictionary can still be parsed.
 		// Therefore, we only log the error without interrupting the parsing.
@@ -95,8 +95,11 @@ func (mdict *MdictBase) readDictHeader() error {
 		meta.numberFormat = NumfmtBe4bytesi
 	}
 
-	// Process encoding
-	encoding := strings.ToLower(headerInfo.Encoding)
+	// Process encoding.
+	encoding := strings.ToLower(strings.TrimSpace(headerInfo.Encoding))
+	if encoding == "" {
+		encoding = strings.ToLower(strings.TrimSpace(headerInfo.IsUTF16))
+	}
 	switch encoding {
 	case "gbk", "gb2312":
 		meta.encoding = EncodingGb18030
@@ -155,7 +158,7 @@ func readMDictFileHeader(filename string) (*mdictHeader, error) {
 	// Read adler32 checksum
 	var adler32Checksum uint32
 	dictHeaderPartByteSize += 4
-	if err := binary.Read(file, binary.BigEndian, &adler32Checksum); err != nil {
+	if err := binary.Read(file, binary.LittleEndian, &adler32Checksum); err != nil {
 		return nil, fmt.Errorf("failed to read adler32 checksum from '%s': %w", filename, err)
 	}
 	log.Debugf("File '%s': Header adler32 checksum from file: %d", filename, adler32Checksum)
@@ -1029,4 +1032,22 @@ func (mdict *MdictBase) locateByKeywordEntry(item *MDictKeywordEntry) ([]byte, e
 // GetKeyWordEntries returns all keyword entries in the dictionary.
 func (mdict *MdictBase) GetKeyWordEntries() ([]*MDictKeywordEntry, error) {
 	return mdict.keyBlockData.keyEntries, nil
+}
+
+func (mdict *MdictBase) buildExactLookup() {
+	if mdict.keyBlockData == nil {
+		mdict.exactLookup = nil
+		return
+	}
+
+	lookup := make(map[string]*MDictKeywordEntry, len(mdict.keyBlockData.keyEntries))
+	for _, entry := range mdict.keyBlockData.keyEntries {
+		if entry == nil {
+			continue
+		}
+		if _, exists := lookup[entry.KeyWord]; !exists {
+			lookup[entry.KeyWord] = entry
+		}
+	}
+	mdict.exactLookup = lookup
 }

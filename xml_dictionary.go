@@ -28,10 +28,11 @@ type Dictionary struct {
 	GeneratedByEngineVersion string   `xml:"GeneratedByEngineVersion,attr"`
 	RequiredEngineVersion    string   `xml:"RequiredEngineVersion,attr"`
 	Encrypted                string   `xml:"Encrypted,attr"`
-	Encoding                 string   `xml:"IsUTF16,attr"`
+	Encoding                 string   `xml:"Encoding,attr"`
+	IsUTF16                  string   `xml:"IsUTF16,attr"`
 	Format                   string   `xml:"Format,attr"`
-	Stripkey                 string   `xml:"Stripkey,attr"`
-	CreationDate             string   `xml:"creationDate,attr"`
+	StripKey                 string   `xml:"StripKey,attr"`
+	CreationDate             string   `xml:"CreationDate,attr"`
 	Compact                  string   `xml:"Compact,attr"`
 	Compat                   string   `xml:"Compat,attr"`
 	KeyCaseSensitive         string   `xml:"KeyCaseSensitive,attr"`

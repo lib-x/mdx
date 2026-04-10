@@ -7,7 +7,7 @@
 
 ## 特性
 
-- **高性能查询**: 使用二分查找算法，对词条进行 O(log n) 复杂度的快速查询。
+- **高性能查询**: 在 `BuildIndex()` 后构建内存精确匹配索引，提供稳定快速的词条查询。
 - **MDX/MDD 支持**: 同时支持 .mdx（文本词典）和 .mdd（资源文件）格式。
 - **标准接口**: 实现 `io/fs.FS` 接口，可以轻松地将词典作为文件系统提供服务。
 - **健壮的错误处理**: 完善的错误处理和日志记录。
@@ -72,6 +72,78 @@ func main() {
 }
 ```
 
+### 示例 1.1: 导出外部索引
+
+如果你想把索引存到 Redis、SQL 或其他外部系统，可以先导出索引条目；之后再把某条索引取回来并回查真实正文。
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/lib-x/mdx"
+)
+
+func main() {
+	dict, err := mdx.New("path/to/your/dictionary.mdx")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := dict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	info := dict.DictionaryInfo()
+	fmt.Printf("title=%s entries=%d\n", info.Title, info.EntryCount)
+
+	entries, err := dict.ExportIndex()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 在这里把 entries 存到 Redis / 数据库。
+	first := entries[0]
+
+	content, err := dict.Resolve(first)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("resolved %q -> %d bytes\n", first.Keyword, len(content))
+}
+```
+
+### 示例 1.2: 显式拆分词条索引和资源索引
+
+```go
+mdxDict, _ := mdx.New("path/to/dictionary.mdx")
+_ = mdxDict.BuildIndex()
+entries, _ := mdxDict.ExportEntries()
+
+mddDict, _ := mdx.New("path/to/dictionary.mdd")
+_ = mddDict.BuildIndex()
+resources, _ := mddDict.ExportResources()
+
+fmt.Println(len(entries), len(resources))
+```
+
+### 示例 1.3: 将导出的索引存入外部存储
+
+库现在提供了一个最小的 `IndexStore` 边界。你可以自己实现 Redis、SQL 或其他后端适配。仓库内也附带了一个小型内存实现：
+
+```go
+store := mdx.NewMemoryIndexStore()
+
+info := dict.DictionaryInfo()
+entries, _ := dict.ExportEntries()
+_ = store.Put(info, entries)
+
+entry, _ := store.GetExact(info.Name, "ability")
+content, _ := dict.Resolve(entry)
+fmt.Println(len(content))
+```
+
 ### 示例 2: 列出 MDD 资源文件
 
 MDD 文件通常包含音频、图片等资源。下面的示例展示了如何列出 MDD 文件中的所有资源。
@@ -117,9 +189,100 @@ func main() {
 }
 ```
 
+### 示例 3: 从 MDX 正文中提取资源引用
+
+MDX 词条正文里通常会引用 CSS、JavaScript、图片、音频等资源，而这些资源通常保存在配套的 MDD 文件中。
+
+```go
+definition, err := mdict.Lookup("accordion")
+if err != nil {
+	log.Fatal(err)
+}
+
+refs := mdx.ExtractResourceRefs(definition)
+for _, ref := range refs {
+	fmt.Println(ref)
+}
+
+fmt.Println(mdx.NormalizeMDDKey("accordion_concertina.jpg"))
+// 输出: \accordion_concertina.jpg
+```
+
+### 示例 4: 在 Go HTTP 中同时服务 MDX HTML 和 MDD 资源
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/lib-x/mdx"
+)
+
+func main() {
+	mdxDict, err := mdx.New("path/to/dictionary.mdx")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := mdxDict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	mddDict, err := mdx.New("path/to/dictionary.mdd")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := mddDict.BuildIndex(); err != nil {
+		log.Fatal(err)
+	}
+
+	http.Handle("/assets/", http.StripPrefix("/assets/", mdx.NewAssetHandler(mddDict)))
+
+	http.HandleFunc("/entry", func(w http.ResponseWriter, r *http.Request) {
+		word := r.URL.Query().Get("word")
+		content, err := mdx.LookupAndRewriteHTML(mdxDict, word, "/assets")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(content)
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+`LookupAndRewriteHTML` 会把如下引用改写成浏览器可直接访问的 URL：
+- `oalecd9.css` -> `/assets/oalecd9.css`
+- `thumb_accordion.jpg` -> `/assets/thumb_accordion.jpg`
+- `snd://ability__gb_1.spx` -> `/assets/snd:%2F%2Fability__gb_1.spx`
+
+仓库中还提供了一个可直接运行的示例：`examples/http-server`
+
+```bash
+go run ./examples/http-server \
+  --mdx /path/to/dictionary.mdx \
+  --mdd /path/to/dictionary.mdd \
+  --listen :8080
+```
+
 ## 贡献
 
 欢迎提交问题（Issues）和拉取请求（Pull Requests）。
+
+## 本地夹具测试
+
+真实 `.mdx` / `.mdd` 词典文件**不会**存放到本仓库中。
+
+可以通过设置 `MDX_TESTDICT_DIR` 指向本地外部词典目录来运行集成测试，例如：
+
+```bash
+MDX_TESTDICT_DIR="/path/to/local/dictionary-dir" go test ./... -run "TestIntegration|TestMdict|TestMdictFS" -v
+```
+
+如果本地没有这些夹具，相关集成测试会自动 `skip`。
 
 ## 许可
 

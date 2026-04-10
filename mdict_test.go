@@ -1,51 +1,51 @@
 package mdx
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMdict_Lookup(t *testing.T) {
-	mdict, err := New("testdata/现代汉语八百词.mdx")
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = mdict.BuildIndex()
-	if err != nil {
-		t.Fatal(err)
-	}
-	word := "一律"
-	definition, err := mdict.Lookup(word)
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := loadFixtureManifest(t)
 
-	assert.NotEmpty(t, definition, "The definition for '%s' should not be empty", word)
-	// The exact content depends on the file, so we do a basic check.
-	assert.True(t, strings.Contains(string(definition), "一律"), "The definition for '%s' should contain the word itself", word)
+	mdict, err := New(manifest.MDXPath)
+	require.NoError(t, err)
+	require.NoError(t, mdict.BuildIndex())
 
-	t.Logf("Lookup result for '%s': %s", word, string(definition))
+	definition, err := mdict.Lookup(manifest.SampleMDXWord)
+	require.NoError(t, err)
+	assert.NotEmpty(t, definition)
+	assert.True(t, strings.Contains(strings.ToLower(string(definition)), manifest.SampleMDXWord))
 
-	// Test a non-existent word
-	_, err = mdict.Lookup("一个不存在的词")
-	assert.Error(t, err, "Looking up a non-existent word should return an error")
+	_, err = mdict.Lookup(manifest.MissingMDXWord)
+	require.Error(t, err)
 }
 
 func BenchmarkMdict_Lookup(b *testing.B) {
-	mdict, err := New("testdata/现代汉语八百词.mdx")
+	dir := os.Getenv("MDX_TESTDICT_DIR")
+	if dir == "" {
+		dir = defaultFixtureDir
+	}
+	path := filepath.Join(dir, "牛津高阶英汉双解词典（第9版）.mdx")
+	if _, err := os.Stat(path); err != nil {
+		b.Skipf("missing benchmark fixture %q: %v", path, err)
+	}
+
+	mdict, err := New(path)
 	if err != nil {
 		b.Fatal(err)
 	}
-	err = mdict.BuildIndex()
-	if err != nil {
+	if err := mdict.BuildIndex(); err != nil {
 		b.Fatal(err)
 	}
 
 	b.ResetTimer()
-
 	for i := 0; i < b.N; i++ {
-		_, _ = mdict.Lookup("一律")
+		_, _ = mdict.Lookup(fixtureSampleMDXWord)
 	}
 }

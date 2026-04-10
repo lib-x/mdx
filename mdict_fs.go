@@ -72,10 +72,7 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 
 	if mfs.mdict.IsMDD() {
 		log.Debugf("MdictFS: MDD file, attempting to find resource: '%s'", name)
-		actualName := strings.ReplaceAll(name, "/", "\\")
-		if !strings.HasPrefix(actualName, "\\") {
-			actualName = "\\" + actualName
-		}
+		actualName := NormalizeMDDKey(name)
 
 		var foundEntry *MDictKeywordEntry
 		entries, _ := mfs.mdict.GetKeyWordEntries()

@@ -84,3 +84,69 @@ func TestMdictBaseBuildExactLookup_FindsUnsortedEntry(t *testing.T) {
 	require.NotNil(t, base.exactLookup)
 	assert.Same(t, ability, base.exactLookup["ability"])
 }
+
+func TestReadFileFromPos_RejectsRangeBeyondFileSize(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "small.bin")
+	require.NoError(t, os.WriteFile(path, []byte("abcd"), 0o600))
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+
+	_, err = readFileFromPos(file, 2, 8)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds file size")
+}
+
+func TestMdictBaseReadKeyBlockMeta_FallsBackWhenEncryptedMetadataLooksInvalid(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "encrypted-meta.mdx")
+
+	headerText := []byte{'D', 0, 'i', 0, 'c', 0, 't', 0, 0, 0}
+	rawMeta := make([]byte, 40)
+	binary.BigEndian.PutUint64(rawMeta[0:8], 3)
+	binary.BigEndian.PutUint64(rawMeta[8:16], 9)
+	binary.BigEndian.PutUint64(rawMeta[16:24], 128)
+	binary.BigEndian.PutUint64(rawMeta[24:32], 64)
+	binary.BigEndian.PutUint64(rawMeta[32:40], 256)
+
+	file, err := os.Create(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+
+	require.NoError(t, binary.Write(file, binary.BigEndian, uint32(len(headerText))))
+	_, err = file.Write(headerText)
+	require.NoError(t, err)
+	require.NoError(t, binary.Write(file, binary.LittleEndian, uint32(0)))
+	_, err = file.Write(rawMeta)
+	require.NoError(t, err)
+
+	paddingSize := 44 + 64 + 256
+	_, err = file.Write(make([]byte, paddingSize))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	base := &MdictBase{
+		filePath: path,
+		meta: &mdictMeta{
+			version:                 2,
+			numberWidth:             8,
+			encryptType:             EncryptKeyInfoEnc,
+			keyBlockMetaStartOffset: int64(4 + len(headerText) + 4),
+		},
+	}
+
+	require.NoError(t, base.readKeyBlockMeta())
+	require.NotNil(t, base.keyBlockMeta)
+	assert.Equal(t, int64(3), base.keyBlockMeta.keyBlockNum)
+	assert.Equal(t, int64(9), base.keyBlockMeta.entriesNum)
+	assert.Equal(t, int64(128), base.keyBlockMeta.keyBlockInfoDecompressSize)
+	assert.Equal(t, int64(64), base.keyBlockMeta.keyBlockInfoCompressedSize)
+	assert.Equal(t, int64(256), base.keyBlockMeta.keyBlockDataTotalSize)
+	assert.Equal(t, int64(62), base.keyBlockMeta.keyBlockInfoStartOffset)
+}

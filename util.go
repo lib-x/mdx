@@ -19,6 +19,7 @@ package mdx
 import (
 	"bytes"
 	"compress/zlib"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -112,16 +113,40 @@ func beBinToU8(bin []byte) uint8 {
 	return uint8(bin[0] & 255)
 }
 
-func readFileFromPos(file *os.File, start, len int64) ([]byte, error) {
-	// Set the pointer to the 10th byte from the start of the file.
-	_, err := file.Seek(start, io.SeekStart)
+func readFileFromPos(file *os.File, start, length int64) ([]byte, error) {
+	if start < 0 {
+		return nil, fmt.Errorf("invalid read start offset %d", start)
+	}
+	if length < 0 {
+		return nil, fmt.Errorf("invalid read length %d", length)
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file before read: %w", err)
+	}
+	fileSize := info.Size()
+	if start > fileSize {
+		return nil, fmt.Errorf("read start offset %d exceeds file size %d", start, fileSize)
+	}
+	if length > fileSize-start {
+		return nil, fmt.Errorf(
+			"read length %d from offset %d exceeds file size %d",
+			length,
+			start,
+			fileSize,
+		)
+	}
+
+	// Set the pointer to the requested byte from the start of the file.
+	_, err = file.Seek(start, io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read len bytes from the current pointer position.
-	data := make([]byte, len)
-	_, err = file.Read(data)
+	// Read length bytes from the current pointer position.
+	data := make([]byte, length)
+	_, err = io.ReadFull(file, data)
 	if err != nil {
 		return nil, err
 	}

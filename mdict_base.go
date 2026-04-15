@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/adler32"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -192,6 +193,12 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 	log.Debugf("Key block metadata read settings for '%s'. Version: %.1f, NumberWidth: %d, KeyBlockMetaStartOffset: %d",
 		mdict.filePath, mdict.meta.version, mdict.meta.numberWidth, mdict.meta.keyBlockMetaStartOffset)
 
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat dictionary file '%s': %w", mdict.filePath, err)
+	}
+	fileSize := fileInfo.Size()
+
 	// Key block metadata section
 	// If version > 2.0, the key block metadata section is 40 bytes long
 	// Otherwise, it is 16 bytes
@@ -208,80 +215,19 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 		return fmt.Errorf("failed to read key block metadata buffer for '%s': %w", mdict.filePath, err)
 	}
 
-	// If encryption type is EncryptKeyInfoEnc, decrypt the key block metadata
-	if mdict.meta.encryptType == EncryptKeyInfoEnc {
-		log.Debugf("Key block metadata is encrypted (type %d) for '%s', decrypting...", mdict.meta.encryptType, mdict.filePath)
-		decryptedKeyBlockMetaBuffer := mdxDecrypt(keyBlockMetaBuffer, int64(keyBlockMetaBytesNum))
-		if len(decryptedKeyBlockMetaBuffer) != keyBlockMetaBytesNum {
-			return fmt.Errorf("key block metadata decryption error for '%s': output size mismatch (expected %d, got %d)", mdict.filePath, keyBlockMetaBytesNum, len(decryptedKeyBlockMetaBuffer))
-		}
-		keyBlockMetaBuffer = decryptedKeyBlockMetaBuffer
-		log.Debugf("Key block metadata decryption complete for: %s", mdict.filePath)
+	parsedMeta, err := mdict.parseKeyBlockMeta(keyBlockMetaBuffer, fileSize)
+	if err != nil && mdict.meta.encryptType == EncryptKeyInfoEnc {
+		log.Warningf(
+			"Encrypted key block metadata parse failed for '%s', retrying without metadata decryption: %v",
+			mdict.filePath,
+			err,
+		)
+		parsedMeta, err = mdict.parseKeyBlockMetaWithoutDecrypt(keyBlockMetaBuffer, fileSize)
 	}
-
-	// 1. [0:8]([0:4]) - Number of key blocks
-	keyBlockNumBytes := keyBlockMetaBuffer[0:mdict.meta.numberWidth]
-
-	var keyBlockNumber uint64
-	if mdict.meta.numberWidth == 8 {
-		keyBlockNumber = beBinToU64(keyBlockNumBytes)
-	} else if mdict.meta.numberWidth == 4 {
-		keyBlockNumber = uint64(beBinToU32(keyBlockNumBytes))
+	if err != nil {
+		return err
 	}
-	keyBlockMeta.keyBlockNum = int64(keyBlockNumber)
-
-	// 2. [8:16]([4:8]) - Number of entries
-	entriesNumBytes := keyBlockMetaBuffer[mdict.meta.numberWidth : mdict.meta.numberWidth+mdict.meta.numberWidth]
-	var entriesNum uint64
-	if mdict.meta.numberWidth == 8 {
-		entriesNum = beBinToU64(entriesNumBytes)
-	} else if mdict.meta.numberWidth == 4 {
-		entriesNum = uint64(beBinToU32(entriesNumBytes))
-	}
-	keyBlockMeta.entriesNum = int64(entriesNum)
-
-	var keyBlockInfoSizeBytesStartOffset int
-
-	// 3. [16:24] - Decompressed size of key block info (only if version >= 2.0)
-	if mdict.meta.version >= 2.0 {
-		keyBlockInfoDecompressSizeBytes := keyBlockMetaBuffer[mdict.meta.numberWidth*2 : mdict.meta.numberWidth*2+mdict.meta.numberWidth]
-
-		var keyBlockInfoDecompressSize uint64
-		if mdict.meta.numberWidth == 8 {
-			keyBlockInfoDecompressSize = beBinToU64(keyBlockInfoDecompressSizeBytes)
-		} else if mdict.meta.numberWidth == 4 {
-			keyBlockInfoDecompressSize = uint64(beBinToU32(keyBlockInfoDecompressSizeBytes))
-		}
-		keyBlockMeta.keyBlockInfoDecompressSize = int64(keyBlockInfoDecompressSize)
-
-		keyBlockInfoSizeBytesStartOffset = mdict.meta.numberWidth * 3
-
-	} else {
-		keyBlockInfoSizeBytesStartOffset = mdict.meta.numberWidth * 2
-	}
-
-	// 4. [24:32]([8:12]) - Size of key block info
-	keyBlockInfoSizeBytes := keyBlockMetaBuffer[keyBlockInfoSizeBytesStartOffset : keyBlockInfoSizeBytesStartOffset+mdict.meta.numberWidth]
-
-	var keyBlockInfoSize uint64
-	if mdict.meta.numberWidth == 8 {
-		keyBlockInfoSize = beBinToU64(keyBlockInfoSizeBytes)
-	} else if mdict.meta.numberWidth == 4 {
-		keyBlockInfoSize = uint64(beBinToU32(keyBlockInfoSizeBytes))
-	}
-
-	keyBlockMeta.keyBlockInfoCompressedSize = int64(keyBlockInfoSize)
-
-	// 5. [32:40]([12:16]) - Size of key blocks
-	keyBlockDataSizeBytes := keyBlockMetaBuffer[keyBlockInfoSizeBytesStartOffset+mdict.meta.numberWidth : keyBlockInfoSizeBytesStartOffset+mdict.meta.numberWidth+mdict.meta.numberWidth]
-
-	var keyBlockDataSize uint64
-	if mdict.meta.numberWidth == 8 {
-		keyBlockDataSize = beBinToU64(keyBlockDataSizeBytes)
-	} else if mdict.meta.numberWidth == 4 {
-		keyBlockDataSize = uint64(beBinToU32(keyBlockDataSizeBytes))
-	}
-	keyBlockMeta.keyBlockDataTotalSize = int64(keyBlockDataSize)
+	keyBlockMeta = parsedMeta
 
 	// 6. [40:44] - 4-byte checksum (TODO: skip if version > 2.0)
 	// TODO: checksum verification
@@ -295,6 +241,194 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 	mdict.keyBlockMeta = keyBlockMeta
 
 	return nil
+}
+
+func (mdict *MdictBase) parseKeyBlockMeta(raw []byte, fileSize int64) (*mdictKeyBlockMeta, error) {
+	if mdict.meta.encryptType == EncryptKeyInfoEnc {
+		log.Debugf("Key block metadata is encrypted (type %d) for '%s', decrypting...", mdict.meta.encryptType, mdict.filePath)
+		decryptedInput := append([]byte(nil), raw...)
+		decrypted := mdxDecrypt(decryptedInput, int64(len(decryptedInput)))
+		if len(decrypted) != len(raw) {
+			return nil, fmt.Errorf(
+				"key block metadata decryption error for '%s': output size mismatch (expected %d, got %d)",
+				mdict.filePath,
+				len(raw),
+				len(decrypted),
+			)
+		}
+		log.Debugf("Key block metadata decryption complete for: %s", mdict.filePath)
+		return mdict.parsePlainKeyBlockMeta(decrypted, fileSize)
+	}
+
+	return mdict.parsePlainKeyBlockMeta(raw, fileSize)
+}
+
+func (mdict *MdictBase) parseKeyBlockMetaWithoutDecrypt(raw []byte, fileSize int64) (*mdictKeyBlockMeta, error) {
+	return mdict.parsePlainKeyBlockMeta(raw, fileSize)
+}
+
+func (mdict *MdictBase) parsePlainKeyBlockMeta(buf []byte, fileSize int64) (*mdictKeyBlockMeta, error) {
+	keyBlockMeta := &mdictKeyBlockMeta{}
+
+	// 1. [0:8]([0:4]) - Number of key blocks
+	keyBlockNumber, err := mdict.readMetaUint(buf, 0)
+	if err != nil {
+		return nil, err
+	}
+	keyBlockMeta.keyBlockNum, err = uint64ToInt64(keyBlockNumber, "key block number")
+	if err != nil {
+		return nil, fmt.Errorf("parse key block metadata for '%s': %w", mdict.filePath, err)
+	}
+
+	// 2. [8:16]([4:8]) - Number of entries
+	entriesNum, err := mdict.readMetaUint(buf, mdict.meta.numberWidth)
+	if err != nil {
+		return nil, err
+	}
+	keyBlockMeta.entriesNum, err = uint64ToInt64(entriesNum, "entry count")
+	if err != nil {
+		return nil, fmt.Errorf("parse key block metadata for '%s': %w", mdict.filePath, err)
+	}
+
+	keyBlockInfoSizeBytesStartOffset := mdict.meta.numberWidth * 2
+	if mdict.meta.version >= 2.0 {
+		// 3. [16:24] - Decompressed size of key block info (only if version >= 2.0)
+		keyBlockInfoDecompressSize, err := mdict.readMetaUint(buf, mdict.meta.numberWidth*2)
+		if err != nil {
+			return nil, err
+		}
+		keyBlockMeta.keyBlockInfoDecompressSize, err = uint64ToInt64(
+			keyBlockInfoDecompressSize,
+			"key block info decompressed size",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("parse key block metadata for '%s': %w", mdict.filePath, err)
+		}
+		keyBlockInfoSizeBytesStartOffset = mdict.meta.numberWidth * 3
+	}
+
+	// 4. [24:32]([8:12]) - Size of key block info.
+	keyBlockInfoSize, err := mdict.readMetaUint(buf, keyBlockInfoSizeBytesStartOffset)
+	if err != nil {
+		return nil, err
+	}
+	keyBlockMeta.keyBlockInfoCompressedSize, err = uint64ToInt64(keyBlockInfoSize, "key block info compressed size")
+	if err != nil {
+		return nil, fmt.Errorf("parse key block metadata for '%s': %w", mdict.filePath, err)
+	}
+
+	// 5. [32:40]([12:16]) - Size of key blocks.
+	keyBlockDataSize, err := mdict.readMetaUint(buf, keyBlockInfoSizeBytesStartOffset+mdict.meta.numberWidth)
+	if err != nil {
+		return nil, err
+	}
+	keyBlockMeta.keyBlockDataTotalSize, err = uint64ToInt64(keyBlockDataSize, "key block data total size")
+	if err != nil {
+		return nil, fmt.Errorf("parse key block metadata for '%s': %w", mdict.filePath, err)
+	}
+
+	if err := mdict.validateKeyBlockMeta(keyBlockMeta, fileSize); err != nil {
+		return nil, err
+	}
+
+	return keyBlockMeta, nil
+}
+
+func (mdict *MdictBase) readMetaUint(buf []byte, offset int) (uint64, error) {
+	end := offset + mdict.meta.numberWidth
+	if offset < 0 || end > len(buf) {
+		return 0, fmt.Errorf(
+			"parse key block metadata for '%s': read [%d:%d] out of range for %d-byte buffer",
+			mdict.filePath,
+			offset,
+			end,
+			len(buf),
+		)
+	}
+
+	if mdict.meta.numberWidth == 8 {
+		return beBinToU64(buf[offset:end]), nil
+	}
+	if mdict.meta.numberWidth == 4 {
+		return uint64(beBinToU32(buf[offset:end])), nil
+	}
+
+	return 0, fmt.Errorf("unsupported key block metadata number width %d", mdict.meta.numberWidth)
+}
+
+func (mdict *MdictBase) validateKeyBlockMeta(meta *mdictKeyBlockMeta, fileSize int64) error {
+	if meta.keyBlockNum <= 0 {
+		return fmt.Errorf("parse key block metadata for '%s': invalid key block count %d", mdict.filePath, meta.keyBlockNum)
+	}
+	if meta.entriesNum <= 0 {
+		return fmt.Errorf("parse key block metadata for '%s': invalid entry count %d", mdict.filePath, meta.entriesNum)
+	}
+	if meta.keyBlockInfoCompressedSize <= 0 {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': invalid key block info compressed size %d",
+			mdict.filePath,
+			meta.keyBlockInfoCompressedSize,
+		)
+	}
+	if meta.keyBlockDataTotalSize <= 0 {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': invalid key block data total size %d",
+			mdict.filePath,
+			meta.keyBlockDataTotalSize,
+		)
+	}
+	if meta.keyBlockInfoDecompressSize < 0 {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': invalid key block info decompressed size %d",
+			mdict.filePath,
+			meta.keyBlockInfoDecompressSize,
+		)
+	}
+
+	if mdict.meta.version >= 2.0 {
+		meta.keyBlockInfoStartOffset = mdict.meta.keyBlockMetaStartOffset + 40 + 4
+	} else {
+		meta.keyBlockInfoStartOffset = mdict.meta.keyBlockMetaStartOffset + 16
+	}
+
+	if meta.keyBlockInfoStartOffset < 0 || meta.keyBlockInfoStartOffset > fileSize {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': key block info start offset %d exceeds file size %d",
+			mdict.filePath,
+			meta.keyBlockInfoStartOffset,
+			fileSize,
+		)
+	}
+
+	if meta.keyBlockInfoCompressedSize > fileSize-meta.keyBlockInfoStartOffset {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': key block info compressed size %d from offset %d exceeds file size %d",
+			mdict.filePath,
+			meta.keyBlockInfoCompressedSize,
+			meta.keyBlockInfoStartOffset,
+			fileSize,
+		)
+	}
+
+	keyBlockEntriesStartOffset := meta.keyBlockInfoStartOffset + meta.keyBlockInfoCompressedSize
+	if meta.keyBlockDataTotalSize > fileSize-keyBlockEntriesStartOffset {
+		return fmt.Errorf(
+			"parse key block metadata for '%s': key block data size %d from offset %d exceeds file size %d",
+			mdict.filePath,
+			meta.keyBlockDataTotalSize,
+			keyBlockEntriesStartOffset,
+			fileSize,
+		)
+	}
+
+	return nil
+}
+
+func uint64ToInt64(v uint64, field string) (int64, error) {
+	if v > math.MaxInt64 {
+		return 0, fmt.Errorf("%s %d exceeds int64 range", field, v)
+	}
+	return int64(v), nil
 }
 
 func (mdict *MdictBase) readKeyBlockInfo() error {

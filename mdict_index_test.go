@@ -2,8 +2,10 @@ package mdx
 
 import (
 	"errors"
+	"os"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -357,4 +359,50 @@ func TestNewAssetHandlerSetsCacheControlForSuccessfulResponses(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
+}
+
+func TestNewAssetHandlerWithOptionsOverridesCacheControl(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{MdictBase: &MdictBase{fileType: MdictTypeMdd, meta: &mdictMeta{}}}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandlerWithOptions(mdd, AssetHandlerOptions{CacheControl: "public, max-age=60"})
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "public, max-age=60", rec.Header().Get("Cache-Control"))
+}
+
+func TestNewAssetHandlerWithOptionsSetsETagAndLastModified(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{MdictBase: &MdictBase{fileType: MdictTypeMdd, meta: &mdictMeta{creationDate: "2026-04-22"}}}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandlerWithOptions(mdd, AssetHandlerOptions{EnableETag: true, EnableLastModified: true})
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotEmpty(t, rec.Header().Get("ETag"))
+	assert.NotEmpty(t, rec.Header().Get("Last-Modified"))
+}
+
+func TestAssetHandlerModTimeFallsBackToFileStat(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "demo.mdd")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+
+	mdd := &Mdict{MdictBase: &MdictBase{filePath: file, fileType: MdictTypeMdd, meta: &mdictMeta{}}}
+	modTime := assetHandlerModTime(mdd)
+	assert.False(t, modTime.IsZero())
 }

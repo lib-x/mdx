@@ -262,6 +262,8 @@ func main() {
 
 `NewAssetHandler` now serves resolver-backed assets through `http.ServeContent`, which means browsers can make `Range` requests against large image/audio assets.
 
+For callers that need explicit HTTP cache semantics, `NewAssetHandlerWithOptions` can customize `Cache-Control` and enable `ETag` / `Last-Modified` headers.
+
 A runnable demo is available at `examples/http-server`:
 
 ```bash

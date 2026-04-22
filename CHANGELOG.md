@@ -5,6 +5,7 @@
 ### Added
 - Added `AssetResolver` and `AssetSource` abstractions to unify resource lookup across sidecar files, companion MDD files, and future sources.
 - Added `LookupAndRewriteHTMLWithEntryBase(...)` for browser-facing output that also rewrites internal `entry://word` links into clickable lookup URLs.
+- Added `NewAssetHandlerWithOptions(...)` so callers can customize HTTP cache semantics and enable `ETag` / `Last-Modified` headers.
 - Added resolver-backed pair composition helpers so MDX/MDD dictionary pairs opened through the registry automatically share one resource resolution pipeline.
 - Added support for ordered multi-volume MDD discovery via `DictionarySpec.MDDPaths` and `demo.mdd`, `demo.1.mdd`, `demo.2.mdd` style scanning.
 - Added minimal HTML audio adaptation with `RewriteEntryAudioLinks(...)` for both `sound://` and `snd://` links.
@@ -25,4 +26,5 @@
   - `snd://` audio links upgrade to playable HTML audio output.
   - duplicated `entry://entry://...` links are normalized.
   - resolver-backed asset HTTP delivery returns `206 Partial Content` with `Content-Range` and cache headers for a real image asset.
+  - `NewAssetHandlerWithOptions(...)` was manually verified against the same real image asset, confirming custom `Cache-Control`, `ETag`, and `Last-Modified` headers.
 - The local validation directory is **not** used by repository or CI tests.

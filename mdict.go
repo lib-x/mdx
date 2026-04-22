@@ -143,8 +143,15 @@ func (mdict *Mdict) IsUTF16() bool {
 
 // Lookup finds the definition for a given word.
 func (mdict *Mdict) Lookup(word string) ([]byte, error) {
+	return mdict.lookupWithRedirects(word, 0, nil)
+}
+
+func (mdict *Mdict) lookupWithRedirects(word string, depth int, seen map[string]struct{}) ([]byte, error) {
 	word = strings.TrimSpace(word)
 	if word == "" {
+		return nil, fmt.Errorf("word not found: (%s)", word)
+	}
+	if depth > 8 {
 		return nil, fmt.Errorf("word not found: (%s)", word)
 	}
 	if mdict.exactLookup == nil {
@@ -157,7 +164,24 @@ func (mdict *Mdict) Lookup(word string) ([]byte, error) {
 	}
 
 	log.Infof("mdict.Lookup hit key:(%s)", word)
-	return mdict.LocateByKeywordEntry(entry)
+	content, err := mdict.LocateByKeywordEntry(entry)
+	if err != nil {
+		return nil, err
+	}
+
+	target, ok := parseLinkTarget(content)
+	if !ok {
+		return content, nil
+	}
+	if seen == nil {
+		seen = make(map[string]struct{})
+	}
+	normalized := strings.ToLower(target)
+	if _, exists := seen[normalized]; exists {
+		return content, nil
+	}
+	seen[normalized] = struct{}{}
+	return mdict.lookupWithRedirects(target, depth+1, seen)
 }
 
 // LocateByKeywordEntry locates and returns the definition by keyword entry.

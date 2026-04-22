@@ -154,6 +154,8 @@ func IsResourceRef(ref string) bool {
 	lower := strings.ToLower(ref)
 	switch {
 	case strings.HasPrefix(lower, "snd://"),
+		strings.HasPrefix(lower, "sound://"),
+		strings.HasPrefix(lower, "file://"),
 		strings.HasPrefix(lower, "img://"),
 		strings.HasPrefix(lower, "css://"),
 		strings.HasPrefix(lower, "js://"):
@@ -164,6 +166,8 @@ func IsResourceRef(ref string) bool {
 		strings.HasPrefix(lower, "mailto:"),
 		strings.HasPrefix(lower, "help:"),
 		strings.HasPrefix(lower, "entry:"),
+		strings.HasPrefix(lower, "mdxentry:"),
+		strings.HasPrefix(lower, "dict:"),
 		strings.HasPrefix(lower, "d:"),
 		strings.HasPrefix(lower, "x:"),
 		strings.HasPrefix(lower, "#"):
@@ -171,7 +175,7 @@ func IsResourceRef(ref string) bool {
 	}
 
 	switch strings.ToLower(path.Ext(lower)) {
-	case ".css", ".js", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".spx", ".mp3", ".wav", ".ogg", ".mp4":
+	case ".css", ".js", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".spx", ".snd", ".mp3", ".wav", ".ogg", ".mp4":
 		return true
 	default:
 		return false
@@ -250,6 +254,12 @@ func AssetLookupCandidates(ref string) []string {
 	if idx := strings.Index(ref, "://"); idx > 0 && idx+3 < len(ref) {
 		candidates = append(candidates, ref[idx+3:])
 	}
+	if strings.HasPrefix(strings.ToLower(ref), "sound://") {
+		candidates = append(candidates, "snd://"+ref[len("sound://"):])
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "file://") {
+		candidates = append(candidates, ref[len("file://"):])
+	}
 
 	expanded := make([]string, 0, len(candidates)*4)
 	for _, candidate := range candidates {
@@ -289,4 +299,16 @@ func AssetLookupCandidates(ref string) []string {
 	}
 
 	return deduped
+}
+
+func parseLinkTarget(content []byte) (string, bool) {
+	text := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(text, "@@LINK=") {
+		return "", false
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(text, "@@LINK="))
+	if target == "" {
+		return "", false
+	}
+	return target, true
 }

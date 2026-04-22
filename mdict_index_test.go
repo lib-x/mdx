@@ -33,6 +33,25 @@ func TestExtractResourceRefs(t *testing.T) {
 	}, refs)
 }
 
+func TestExtractResourceRefs_SoundProtocol(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<audio src="sound://apple.snd"></audio>`)
+	refs := ExtractResourceRefs(content)
+	assert.Equal(t, []string{"sound://apple.snd"}, refs)
+}
+
+func TestIsResourceRef_Protocols(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, IsResourceRef("snd://apple.spx"))
+	assert.True(t, IsResourceRef("sound://apple.snd"))
+	assert.True(t, IsResourceRef("file://images/thumb_apple.jpg"))
+	assert.False(t, IsResourceRef("entry://apple"))
+	assert.False(t, IsResourceRef("mdxentry://apple"))
+	assert.False(t, IsResourceRef("dict://apple"))
+}
+
 func TestRewriteEntryResourceURLs(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +74,16 @@ func TestAssetLookupCandidates(t *testing.T) {
 	audioCandidates := AssetLookupCandidates("snd://ability__gb_1.spx")
 	assert.Contains(t, audioCandidates, "snd://ability__gb_1.spx")
 	assert.Contains(t, audioCandidates, "ability__gb_1.spx")
+
+	soundCandidates := AssetLookupCandidates("sound://apple.snd")
+	assert.Contains(t, soundCandidates, "sound://apple.snd")
+	assert.Contains(t, soundCandidates, "snd://apple.snd")
+	assert.Contains(t, soundCandidates, "apple.snd")
+
+	fileCandidates := AssetLookupCandidates("file://images/thumb_apple.jpg")
+	assert.Contains(t, fileCandidates, "file://images/thumb_apple.jpg")
+	assert.Contains(t, fileCandidates, "images/thumb_apple.jpg")
+	assert.Contains(t, fileCandidates, `\images\thumb_apple.jpg`)
 }
 
 func TestMemoryIndexStore(t *testing.T) {

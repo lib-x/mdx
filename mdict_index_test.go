@@ -64,6 +64,46 @@ func TestRewriteEntryResourceURLs(t *testing.T) {
 	assert.Contains(t, rewritten, `href="help:phonetics"`)
 }
 
+func TestRewriteEntryAudioLinks_SoundScheme(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<div><a class="audio" href="sound://ability__gb_1.spx">Play</a></div>`)
+	rewritten := string(RewriteEntryAudioLinks(content, "/assets"))
+
+	assert.Contains(t, rewritten, `<audio controls src="/assets/sound:%2F%2Fability__gb_1.spx">Play</audio>`)
+	assert.NotContains(t, rewritten, `<a class="audio"`)
+}
+
+func TestRewriteEntryAudioLinks_SndScheme(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<div><a href="snd://ability__gb_1.spx"><span>Play</span></a><a href="entry://ability">entry</a></div>`)
+	rewritten := string(RewriteEntryAudioLinks(content, "/assets"))
+
+	assert.Contains(t, rewritten, `<audio controls src="/assets/snd:%2F%2Fability__gb_1.spx"><span>Play</span></audio>`)
+	assert.Contains(t, rewritten, `<a href="entry://ability">entry</a>`)
+}
+
+func TestRewriteEntryAudioLinks_RewrittenAssetURL(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<div><a href="/assets/snd:%2F%2Fability__gb_1.spx">🔊</a></div>`)
+	rewritten := string(RewriteEntryAudioLinks(content, "/assets"))
+
+	assert.Contains(t, rewritten, `<audio controls src="/assets/snd:%2F%2Fability__gb_1.spx">🔊</audio>`)
+}
+
+func TestRewriteEntryInternalLinks(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<a href="entry://entry://apple">apple</a><a href="entry://#frag">frag</a><a href="help:phonetics">help</a>`)
+	rewritten := string(RewriteEntryInternalLinks(content))
+
+	assert.Contains(t, rewritten, `href="entry://apple"`)
+	assert.Contains(t, rewritten, `href="#frag"`)
+	assert.Contains(t, rewritten, `href="help:phonetics"`)
+}
+
 func TestAssetLookupCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -211,4 +251,26 @@ func TestNewAssetHandlerIntegration(t *testing.T) {
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestNewAssetHandlerUsesResolverForMDD(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{
+		MdictBase: &MdictBase{
+			fileType: MdictTypeMdd,
+			meta:     &mdictMeta{},
+		},
+	}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandler(mdd)
+
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []byte("resolver-audio"), rec.Body.Bytes())
 }

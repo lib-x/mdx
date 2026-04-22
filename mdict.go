@@ -19,6 +19,7 @@ package mdx
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -32,6 +33,7 @@ var log = logging.MustGetLogger("default")
 type Mdict struct {
 	*MdictBase
 	rangeTreeRoot *RecordBlockRangeTreeNode
+	assetResolver *AssetResolver
 }
 
 // New creates a new Mdict instance.
@@ -49,7 +51,11 @@ func New(filename string) (*Mdict, error) {
 			rangeTreeRoot: new(RecordBlockRangeTreeNode),
 		},
 	}
-	return mdict, mdict.init()
+	if err := mdict.init(); err != nil {
+		return nil, err
+	}
+	mdict.assetResolver = NewAssetResolver(mdict)
+	return mdict, nil
 }
 
 // init initializes the dictionary, mainly responsible for reading and parsing the file header and key block metadata.
@@ -244,4 +250,57 @@ func (mdict *Mdict) GetKeyWordEntriesSize() int64 {
 // KeywordEntryToIndex converts a keyword entry to a more detailed keyword index.
 func (mdict *Mdict) KeywordEntryToIndex(item *MDictKeywordEntry) (*MDictKeywordIndex, error) {
 	return mdict.MdictBase.keywordEntryToIndex(item)
+}
+
+func (mdict *Mdict) readMDDResource(name string) ([]byte, error) {
+	if mdict == nil || !mdict.IsMDD() {
+		return nil, fs.ErrNotExist
+	}
+
+	entries, _ := mdict.GetKeyWordEntries()
+	for _, candidate := range AssetLookupCandidates(name) {
+		for _, entry := range entries {
+			if entry == nil {
+				continue
+			}
+			if strings.EqualFold(entry.KeyWord, candidate) {
+				return mdict.LocateByKeywordEntry(entry)
+			}
+		}
+	}
+
+	if mdict.resourceComparableLookup != nil {
+		for _, candidate := range AssetLookupCandidates(name) {
+			normalized := normalizeResourceComparableKey(candidate)
+			if normalized == "" {
+				continue
+			}
+			entry, ok := mdict.resourceComparableLookup[normalized]
+			if !ok || entry == nil {
+				continue
+			}
+			return mdict.LocateByKeywordEntry(entry)
+		}
+	}
+
+	return nil, fs.ErrNotExist
+}
+
+// AssetResolver returns the shared asset resolver for this dictionary.
+func (mdict *Mdict) AssetResolver() *AssetResolver {
+	if mdict == nil {
+		return nil
+	}
+	if mdict.assetResolver == nil {
+		mdict.assetResolver = NewAssetResolver(mdict)
+	}
+	return mdict.assetResolver
+}
+
+// SetAssetResolver overrides the shared asset resolver for this dictionary.
+func (mdict *Mdict) SetAssetResolver(resolver *AssetResolver) {
+	if mdict == nil {
+		return
+	}
+	mdict.assetResolver = resolver
 }

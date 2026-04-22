@@ -71,43 +71,12 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 	var lookupErr error
 
 	if mfs.mdict.IsMDD() {
-		log.Debugf("MdictFS: MDD file, attempting to find resource: '%s'", name)
-		entries, _ := mfs.mdict.GetKeyWordEntries()
-		var foundEntry *MDictKeywordEntry
-		for _, candidate := range AssetLookupCandidates(name) {
-			for _, entry := range entries {
-				if strings.EqualFold(entry.KeyWord, candidate) {
-					foundEntry = entry
-					break
-				}
-			}
-			if foundEntry != nil {
-				log.Debugf("MdictFS: Found MDD entry for '%s' using candidate '%s' (keyword '%s')", name, candidate, foundEntry.KeyWord)
-				fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
-				break
-			}
-		}
-
-		if foundEntry == nil && mfs.mdict.comparableLookup != nil {
-			for _, candidate := range AssetLookupCandidates(name) {
-				normalized := normalizeResourceComparableKey(candidate)
-				if normalized == "" {
-					continue
-				}
-				entry, ok := mfs.mdict.resourceComparableLookup[normalized]
-				if !ok || entry == nil {
-					continue
-				}
-				foundEntry = entry
-				log.Debugf("MdictFS: Found MDD entry for '%s' using comparable candidate '%s' (keyword '%s')", name, candidate, foundEntry.KeyWord)
-				fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
-				break
-			}
-		}
-
-		if foundEntry == nil {
-			log.Debugf("MdictFS: MDD resource '%s' not found in keyword entries after candidate expansion.", name)
+		log.Debugf("MdictFS: MDD file, resolving resource through AssetResolver: '%s'", name)
+		resolver := mfs.mdict.AssetResolver()
+		if resolver == nil {
 			lookupErr = fs.ErrNotExist
+		} else {
+			fileContent, lookupErr = resolver.Read(name)
 		}
 	} else { // MDX file
 		log.Debugf("MdictFS: MDX file, looking up keyword: '%s'", name)

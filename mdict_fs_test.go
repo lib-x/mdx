@@ -64,3 +64,26 @@ func TestMdictFSIntegration_OpenMDDResourceComparableKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, data)
 }
+
+func TestMdictFSOpenUsesAssetResolverForMDD(t *testing.T) {
+	t.Parallel()
+
+	dict := &Mdict{
+		MdictBase: &MdictBase{
+			fileType: MdictTypeMdd,
+			meta:     &mdictMeta{},
+		},
+	}
+	dict.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	mfs := NewMdictFS(dict)
+	file, err := mfs.Open("sound://audio/test.spx")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+
+	data, err := io.ReadAll(file)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("resolver-audio"), data)
+}

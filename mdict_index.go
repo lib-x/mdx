@@ -12,6 +12,7 @@ var (
 	resourceAttrPattern   = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["']([^"']+)["']`)
 	resourceAssignPattern = regexp.MustCompile(`(?i)\b(src|href)\s*=\s*(["'])([^"']+)(["'])`)
 	resourceTokenPattern  = regexp.MustCompile(`(?i)\b(?:snd|img|css|js)://[^\s"'<>]+`)
+	audioLinkPattern      = regexp.MustCompile(`(?is)<a\b([^>]*)\bhref\s*=\s*["']([^"']+)["']([^>]*)>(.*?)</a>`)
 )
 
 // DictionaryInfo describes dictionary metadata suitable for external indexing.
@@ -241,6 +242,61 @@ func RewriteEntryResourceURLs(content []byte, assetBasePath string) []byte {
 	})
 
 	return []byte(rewritten)
+}
+
+// RewriteEntryAudioLinks rewrites anchor-based sound:// and snd:// links into HTML audio controls.
+func RewriteEntryAudioLinks(content []byte, assetBasePath string) []byte {
+	rewritten := audioLinkPattern.ReplaceAllStringFunc(string(content), func(match string) string {
+		parts := audioLinkPattern.FindStringSubmatch(match)
+		if len(parts) != 5 {
+			return match
+		}
+		ref := strings.TrimSpace(parts[2])
+		if !isAudioHref(ref, assetBasePath) {
+			return match
+		}
+		return `<audio controls src="` + audioHrefURL(ref, assetBasePath) + `">` + parts[4] + `</audio>`
+	})
+
+	return []byte(rewritten)
+}
+
+// RewriteEntryInternalLinks normalizes malformed internal entry links commonly seen in MDict HTML.
+func RewriteEntryInternalLinks(content []byte) []byte {
+	text := string(content)
+	text = strings.ReplaceAll(text, `entry://entry://`, `entry://`)
+	text = strings.ReplaceAll(text, `href="entry://#`, `href="#`)
+	text = strings.ReplaceAll(text, `href='entry://#`, `href='#`)
+	return []byte(text)
+}
+
+func isAudioHref(ref, assetBasePath string) bool {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	if strings.HasPrefix(lower, "sound://") || strings.HasPrefix(lower, "snd://") {
+		return true
+	}
+	base := strings.ToLower(strings.TrimRight(assetBasePath, "/"))
+	if base == "" {
+		return false
+	}
+	if !strings.HasPrefix(lower, base+"/") {
+		return false
+	}
+	encoded := lower[len(base)+1:]
+	decoded, err := url.PathUnescape(encoded)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(decoded, "sound://") || strings.HasPrefix(decoded, "snd://")
+}
+
+func audioHrefURL(ref, assetBasePath string) string {
+	trimmed := strings.TrimSpace(ref)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "sound://") || strings.HasPrefix(lower, "snd://") {
+		return AssetURL(assetBasePath, trimmed)
+	}
+	return trimmed
 }
 
 // AssetLookupCandidates expands a raw asset reference into possible storage lookup candidates.

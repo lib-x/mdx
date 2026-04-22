@@ -2,7 +2,6 @@ package mdx
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -19,7 +18,10 @@ func LookupAndRewriteHTML(dict *Mdict, word, assetBasePath string) ([]byte, erro
 		return nil, err
 	}
 
-	return RewriteEntryResourceURLs(content, assetBasePath), nil
+	rewritten := RewriteEntryResourceURLs(content, assetBasePath)
+	rewritten = RewriteEntryInternalLinks(rewritten)
+	rewritten = RewriteEntryAudioLinks(rewritten, assetBasePath)
+	return rewritten, nil
 }
 
 // NewAssetHandler creates an HTTP handler that serves MDD-backed assets by raw reference name.
@@ -35,32 +37,21 @@ func NewAssetHandler(mdd *Mdict) http.Handler {
 			raw = decoded
 		}
 
-		var lastErr error
-		for _, candidate := range AssetLookupCandidates(raw) {
-			file, err := NewMdictFS(mdd).Open(candidate)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			data, err := io.ReadAll(file)
-			_ = file.Close()
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			if contentType := http.DetectContentType(data); contentType != "" {
-				w.Header().Set("Content-Type", contentType)
-			}
-			_, _ = w.Write(data)
+		resolver := mdd.AssetResolver()
+		if resolver == nil {
+			http.NotFound(w, r)
 			return
 		}
 
-		if lastErr != nil {
-			http.Error(w, lastErr.Error(), http.StatusNotFound)
+		data, err := resolver.Read(raw)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		http.NotFound(w, r)
+
+		if contentType := http.DetectContentType(data); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		_, _ = w.Write(data)
 	})
 }

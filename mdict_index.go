@@ -2,6 +2,7 @@ package mdx
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
@@ -13,6 +14,8 @@ var (
 	resourceAssignPattern = regexp.MustCompile(`(?i)\b(src|href)\s*=\s*(["'])([^"']+)(["'])`)
 	resourceTokenPattern  = regexp.MustCompile(`(?i)\b(?:snd|img|css|js)://[^\s"'<>]+`)
 	audioLinkPattern      = regexp.MustCompile(`(?is)<a\b([^>]*)\bhref\s*=\s*["']([^"']+)["']([^>]*)>(.*?)</a>`)
+	entryLinkDQPattern    = regexp.MustCompile(`(?i)href\s*=\s*"entry://([^"]*)"`)
+	entryLinkSQPattern    = regexp.MustCompile(`(?i)href\s*=\s*'entry://([^']*)'`)
 )
 
 // DictionaryInfo describes dictionary metadata suitable for external indexing.
@@ -268,6 +271,41 @@ func RewriteEntryInternalLinks(content []byte) []byte {
 	text = strings.ReplaceAll(text, `href="entry://#`, `href="#`)
 	text = strings.ReplaceAll(text, `href='entry://#`, `href='#`)
 	return []byte(text)
+}
+
+// RewriteEntryLookupLinks rewrites entry:// word links into browser-servable lookup URLs.
+func RewriteEntryLookupLinks(content []byte, entryBasePath string) []byte {
+	text := string(RewriteEntryInternalLinks(content))
+	rewrite := func(pattern *regexp.Regexp, quote string) {
+		text = pattern.ReplaceAllStringFunc(text, func(match string) string {
+			parts := pattern.FindStringSubmatch(match)
+			if len(parts) != 2 {
+				return match
+			}
+			target := strings.TrimSpace(parts[1])
+			replacement := "#"
+			if target != "" && !strings.HasPrefix(target, "#") {
+				replacement = buildEntryLookupURL(entryBasePath, target)
+			} else if strings.HasPrefix(target, "#") {
+				replacement = target
+			}
+			return `href=` + quote + replacement + quote
+		})
+	}
+	rewrite(entryLinkDQPattern, `"`)
+	rewrite(entryLinkSQPattern, `'`)
+	return []byte(text)
+}
+
+func buildEntryLookupURL(basePath, target string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" {
+		basePath = "/entry?word="
+	}
+	if strings.Contains(basePath, "%s") {
+		return fmt.Sprintf(basePath, url.QueryEscape(target))
+	}
+	return basePath + url.QueryEscape(target)
 }
 
 func isAudioHref(ref, assetBasePath string) bool {

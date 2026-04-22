@@ -241,7 +241,7 @@ func main() {
 
 	http.HandleFunc("/entry", func(w http.ResponseWriter, r *http.Request) {
 		word := r.URL.Query().Get("word")
-		content, err := mdx.LookupAndRewriteHTML(mdxDict, word, "/assets")
+		content, err := mdx.LookupAndRewriteHTMLWithEntryBase(mdxDict, word, "/assets", "/entry?word=")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -254,10 +254,14 @@ func main() {
 }
 ```
 
-`LookupAndRewriteHTML` 会把如下引用改写成浏览器可直接访问的 URL：
+`LookupAndRewriteHTML` 会把资源引用改写成浏览器可直接访问的 URL：
 - `oalecd9.css` -> `/assets/oalecd9.css`
 - `thumb_accordion.jpg` -> `/assets/thumb_accordion.jpg`
 - `snd://ability__gb_1.spx` -> `/assets/snd:%2F%2Fability__gb_1.spx`
+
+`LookupAndRewriteHTMLWithEntryBase` 还会把内部 `entry://word` 链接改写成可点击的浏览器查询 URL（例如 `/entry?word=word`），清理异常的 `entry://entry://...` 链接，并把基于锚点的 `sound://` / `snd://` 音频链接升级为 `<audio controls ...>` 输出。
+
+`NewAssetHandler` 现在通过 `http.ServeContent` 提供 resolver-backed 资源，因此浏览器可以对较大的图片/音频资源发起 `Range` 请求。
 
 仓库中还提供了一个可直接运行的示例：`examples/http-server`
 
@@ -305,6 +309,7 @@ MDX_TESTDICT_DIR="/path/to/local/dictionary-dir" go test ./... -run "TestIntegra
 ## 多词典管理层
 
 现在提供了一个多词典注册层，适用于一个目录中放置很多 `.mdx` / `.mdd` 配对文件的场景。
+该注册层现在会自动发现 `demo.mdd`、`demo.1.mdd`、`demo.2.mdd` 这类多分卷资源文件，并默认组合成 sidecar-first 的 resolver 资源查找链路。
 
 核心 API：
 - `ScanDirectory(root string)`

@@ -11,6 +11,11 @@ import (
 
 // LookupAndRewriteHTML looks up an MDX entry and rewrites its asset URLs for web delivery.
 func LookupAndRewriteHTML(dict *Mdict, word, assetBasePath string) ([]byte, error) {
+	return LookupAndRewriteHTMLWithEntryBase(dict, word, assetBasePath, "")
+}
+
+// LookupAndRewriteHTMLWithEntryBase looks up an MDX entry and rewrites its asset and entry URLs for web delivery.
+func LookupAndRewriteHTMLWithEntryBase(dict *Mdict, word, assetBasePath, entryBasePath string) ([]byte, error) {
 	if dict == nil {
 		return nil, errors.New("mdict is nil")
 	}
@@ -20,10 +25,17 @@ func LookupAndRewriteHTML(dict *Mdict, word, assetBasePath string) ([]byte, erro
 		return nil, err
 	}
 
+	return rewriteEntryHTML(content, assetBasePath, entryBasePath), nil
+}
+
+func rewriteEntryHTML(content []byte, assetBasePath, entryBasePath string) []byte {
 	rewritten := RewriteEntryResourceURLs(content, assetBasePath)
 	rewritten = RewriteEntryInternalLinks(rewritten)
+	if strings.TrimSpace(entryBasePath) != "" {
+		rewritten = RewriteEntryLookupLinks(rewritten, entryBasePath)
+	}
 	rewritten = RewriteEntryAudioLinks(rewritten, assetBasePath)
-	return rewritten, nil
+	return rewritten
 }
 
 // NewAssetHandler creates an HTTP handler that serves MDD-backed assets by raw reference name.

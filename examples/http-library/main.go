@@ -63,7 +63,7 @@ func main() {
 				http.Error(w, "missing word", http.StatusBadRequest)
 				return
 			}
-			content, err := mdx.LookupAndRewriteHTML(mdxDict, word, "/dict/"+dictID+"/assets")
+			content, err := mdx.LookupAndRewriteHTMLWithEntryBase(mdxDict, word, "/dict/"+dictID+"/assets", "/dict/"+dictID+"/entry?word=")
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return

@@ -104,6 +104,40 @@ func TestRewriteEntryInternalLinks(t *testing.T) {
 	assert.Contains(t, rewritten, `href="help:phonetics"`)
 }
 
+func TestRewriteEntryLookupLinks(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<a href="entry://apple">apple</a><a href="entry://#frag">frag</a><a href="entry://entry://banana">banana</a><a href="help:phonetics">help</a>`)
+	rewritten := string(RewriteEntryLookupLinks(content, "/entry?word="))
+
+	assert.Contains(t, rewritten, `href="/entry?word=apple"`)
+	assert.Contains(t, rewritten, `href="#frag"`)
+	assert.Contains(t, rewritten, `href="/entry?word=banana"`)
+	assert.Contains(t, rewritten, `href="help:phonetics"`)
+}
+
+func TestRewriteEntryResourceURLs_RewritesSourceTags(t *testing.T) {
+	t.Parallel()
+
+	content := []byte(`<audio controls><source src="snd://ability__gb_1.spx" type="audio/x-speex"></audio>`)
+	rewritten := string(RewriteEntryResourceURLs(content, "/assets"))
+
+	assert.Contains(t, rewritten, `src="/assets/snd:%2F%2Fability__gb_1.spx"`)
+}
+
+func TestLookupAndRewriteHTMLWithEntryBase(t *testing.T) {
+	t.Parallel()
+
+	dict := &Mdict{}
+	content := []byte(`<a href="entry://apple">apple</a><a href="snd://ability__gb_1.spx">🔊</a><img src="thumb_apple.jpg">`)
+	rewritten := rewriteEntryHTML(content, "/assets", "/entry?word=")
+
+	assert.Contains(t, string(rewritten), `href="/entry?word=apple"`)
+	assert.Contains(t, string(rewritten), `<audio controls src="/assets/snd:%2F%2Fability__gb_1.spx">🔊</audio>`)
+	assert.Contains(t, string(rewritten), `src="/assets/thumb_apple.jpg"`)
+	_ = dict
+}
+
 func TestAssetLookupCandidates(t *testing.T) {
 	t.Parallel()
 

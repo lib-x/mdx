@@ -60,7 +60,7 @@ func main() {
 			return
 		}
 
-		content, err := mdx.LookupAndRewriteHTML(mdxDict, word, assetPrefix)
+		content, err := mdx.LookupAndRewriteHTMLWithEntryBase(mdxDict, word, assetPrefix, "/entry?word=")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return

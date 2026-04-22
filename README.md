@@ -240,7 +240,7 @@ func main() {
 
 	http.HandleFunc("/entry", func(w http.ResponseWriter, r *http.Request) {
 		word := r.URL.Query().Get("word")
-		content, err := mdx.LookupAndRewriteHTML(mdxDict, word, "/assets")
+		content, err := mdx.LookupAndRewriteHTMLWithEntryBase(mdxDict, word, "/assets", "/entry?word=")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -253,10 +253,14 @@ func main() {
 }
 ```
 
-`LookupAndRewriteHTML` rewrites references such as:
+`LookupAndRewriteHTML` rewrites resource references such as:
 - `oalecd9.css` -> `/assets/oalecd9.css`
 - `thumb_accordion.jpg` -> `/assets/thumb_accordion.jpg`
 - `snd://ability__gb_1.spx` -> `/assets/snd:%2F%2Fability__gb_1.spx`
+
+`LookupAndRewriteHTMLWithEntryBase` additionally rewrites internal `entry://word` links into browser-servable lookup URLs such as `/entry?word=word`, normalizes malformed `entry://entry://...` links, and upgrades anchor-based `sound://` / `snd://` audio links into `<audio controls ...>` output.
+
+`NewAssetHandler` now serves resolver-backed assets through `http.ServeContent`, which means browsers can make `Range` requests against large image/audio assets.
 
 A runnable demo is available at `examples/http-server`:
 
@@ -305,6 +309,7 @@ A first in-memory fuzzy reference implementation is now available as `MemoryFuzz
 ## Dictionary Library
 
 A multi-dictionary registry is available for directories containing many `.mdx` / `.mdd` pairs.
+The registry now auto-discovers companion resource chains such as `demo.mdd`, `demo.1.mdd`, `demo.2.mdd`, and composes resolver-backed sidecar-first resource lookup by default.
 
 Core APIs:
 - `ScanDirectory(root string)`

@@ -4,6 +4,7 @@
 
 ### Added
 - Added `AssetResolver` and `AssetSource` abstractions to unify resource lookup across sidecar files, companion MDD files, and future sources.
+- Added `LookupAndRewriteHTMLWithEntryBase(...)` for browser-facing output that also rewrites internal `entry://word` links into clickable lookup URLs.
 - Added resolver-backed pair composition helpers so MDX/MDD dictionary pairs opened through the registry automatically share one resource resolution pipeline.
 - Added support for ordered multi-volume MDD discovery via `DictionarySpec.MDDPaths` and `demo.mdd`, `demo.1.mdd`, `demo.2.mdd` style scanning.
 - Added minimal HTML audio adaptation with `RewriteEntryAudioLinks(...)` for both `sound://` and `snd://` links.
@@ -13,6 +14,7 @@
 - Resolver-backed asset HTTP delivery now uses `http.ServeContent`, adding browser-friendly `Range` handling and a default `Cache-Control: public, max-age=3600` policy.
 - `examples/http-server-redis` now uses the same browser-facing rewrite pipeline as the other HTTP examples, including internal-link cleanup and audio-link adaptation.
 - `LookupAndRewriteHTML()` now rewrites resource URLs, normalizes malformed internal `entry://entry://...` links, and upgrades audio anchors to browser-playable `<audio controls>` blocks.
+- Browser-facing examples now expose cleaner internal entry navigation and share the same resolver/audio rewrite path.
 - Resource redirect handling now follows UTF-16LE `@@@LINK=` records with loop protection.
 - Dictionary pair setup now defaults to sidecar-first resource lookup using the MDX directory plus any discovered companion MDD volumes.
 

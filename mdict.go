@@ -146,6 +146,34 @@ func (mdict *Mdict) Lookup(word string) ([]byte, error) {
 	return mdict.lookupWithRedirects(word, 0, nil)
 }
 
+// FindExactEntry returns the exact keyword entry for the supplied word.
+func (mdict *Mdict) FindExactEntry(word string) (*MDictKeywordEntry, bool) {
+	word = strings.TrimSpace(word)
+	if word == "" || mdict.exactLookup == nil {
+		return nil, false
+	}
+	entry, ok := mdict.exactLookup[word]
+	return entry, ok
+}
+
+// FindComparableEntry returns the normalized comparable keyword entry for the supplied word.
+func (mdict *Mdict) FindComparableEntry(word string) (*MDictKeywordEntry, bool) {
+	if mdict.comparableLookup == nil {
+		return nil, false
+	}
+	key := normalizeComparableKey(word)
+	if key == "" {
+		return nil, false
+	}
+	entry, ok := mdict.comparableLookup[key]
+	return entry, ok
+}
+
+// ResolveEntry resolves a keyword entry into dictionary content bytes.
+func (mdict *Mdict) ResolveEntry(entry *MDictKeywordEntry) ([]byte, error) {
+	return mdict.LocateByKeywordEntry(entry)
+}
+
 func (mdict *Mdict) lookupWithRedirects(word string, depth int, seen map[string]struct{}) ([]byte, error) {
 	word = strings.TrimSpace(word)
 	if word == "" {
@@ -158,13 +186,16 @@ func (mdict *Mdict) lookupWithRedirects(word string, depth int, seen map[string]
 		return nil, fmt.Errorf("word not found: (%s)", word)
 	}
 
-	entry, ok := mdict.exactLookup[word]
+	entry, ok := mdict.FindExactEntry(word)
 	if !ok {
+		entry, ok = mdict.FindComparableEntry(word)
+	}
+	if !ok || entry == nil {
 		return nil, fmt.Errorf("word not found: (%s)", word)
 	}
 
 	log.Infof("mdict.Lookup hit key:(%s)", word)
-	content, err := mdict.LocateByKeywordEntry(entry)
+	content, err := mdict.ResolveEntry(entry)
 	if err != nil {
 		return nil, err
 	}

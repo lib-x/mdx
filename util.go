@@ -23,11 +23,16 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"regexp"
+	"strings"
 	"unicode/utf16"
 
 	"github.com/c0mm4nd/go-ripemd"
 	"golang.org/x/text/encoding/unicode"
 )
+
+var comparableKeyPattern = regexp.MustCompile(`[\s:.,\-_'"()#<>!]+`)
+var resourceSeparatorReplacer = strings.NewReplacer("/", `\`)
 
 func decodeLittleEndianUtf16(raw []byte) (string, error) {
 	decoder := unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM).NewDecoder()
@@ -206,4 +211,23 @@ func ripemd128bytes(data []byte) []byte {
 	out := md.Sum(nil)
 	md.Reset()
 	return out
+}
+
+func normalizeComparableKey(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return ""
+	}
+	return comparableKeyPattern.ReplaceAllString(trimmed, "")
+}
+
+func normalizeResourceComparableKey(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.TrimPrefix(trimmed, "/")
+	trimmed = strings.TrimPrefix(trimmed, `\`)
+	trimmed = resourceSeparatorReplacer.Replace(trimmed)
+	return trimmed
 }

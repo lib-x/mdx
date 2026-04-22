@@ -263,7 +263,7 @@ func main() {
 
 `NewAssetHandler` 现在通过 `http.ServeContent` 提供 resolver-backed 资源，因此浏览器可以对较大的图片/音频资源发起 `Range` 请求。
 
-如果调用方需要更明确的 HTTP 缓存语义，可以使用 `NewAssetHandlerWithOptions` 来自定义 `Cache-Control`，并启用 `ETag` / `Last-Modified` 头。
+如果调用方需要更明确的 HTTP 缓存语义，可以使用 `NewAssetHandlerWithOptions` 来自定义 `Cache-Control`，并启用 `ETag` / `Last-Modified` 头。 同一条基于 `ServeContent` 的交付路径也支持 `If-None-Match` 和 `If-Modified-Since` 条件请求。
 
 仓库中还提供了一个可直接运行的示例：`examples/http-server`
 

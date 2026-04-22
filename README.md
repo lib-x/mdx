@@ -262,7 +262,7 @@ func main() {
 
 `NewAssetHandler` now serves resolver-backed assets through `http.ServeContent`, which means browsers can make `Range` requests against large image/audio assets.
 
-For callers that need explicit HTTP cache semantics, `NewAssetHandlerWithOptions` can customize `Cache-Control` and enable `ETag` / `Last-Modified` headers.
+For callers that need explicit HTTP cache semantics, `NewAssetHandlerWithOptions` can customize `Cache-Control` and enable `ETag` / `Last-Modified` headers. Conditional requests using `If-None-Match` and `If-Modified-Since` are also supported through the same ServeContent-based path.
 
 A runnable demo is available at `examples/http-server`:
 

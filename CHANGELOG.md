@@ -13,6 +13,7 @@
 ### Changed
 - Routed `MdictFS` and `NewAssetHandler` through the shared `AssetResolver` so file-system and HTTP delivery now use the same resource semantics.
 - Resolver-backed asset HTTP delivery now uses `http.ServeContent`, adding browser-friendly `Range` handling and a default `Cache-Control: public, max-age=3600` policy.
+- Conditional requests (`If-None-Match` / `If-Modified-Since`) now return `304 Not Modified` through the same asset delivery path.
 - `examples/http-server-redis` now uses the same browser-facing rewrite pipeline as the other HTTP examples, including internal-link cleanup and audio-link adaptation.
 - `LookupAndRewriteHTML()` now rewrites resource URLs, normalizes malformed internal `entry://entry://...` links, and upgrades audio anchors to browser-playable `<audio controls>` blocks.
 - Browser-facing examples now expose cleaner internal entry navigation and share the same resolver/audio rewrite path.
@@ -27,4 +28,5 @@
   - duplicated `entry://entry://...` links are normalized.
   - resolver-backed asset HTTP delivery returns `206 Partial Content` with `Content-Range` and cache headers for a real image asset.
   - `NewAssetHandlerWithOptions(...)` was manually verified against the same real image asset, confirming custom `Cache-Control`, `ETag`, and `Last-Modified` headers.
+  - Real conditional requests against the same image asset returned `304 Not Modified` for both `If-None-Match` and `If-Modified-Since`.
 - The local validation directory is **not** used by repository or CI tests.

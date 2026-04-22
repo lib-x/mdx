@@ -406,3 +406,54 @@ func TestAssetHandlerModTimeFallsBackToFileStat(t *testing.T) {
 	modTime := assetHandlerModTime(mdd)
 	assert.False(t, modTime.IsZero())
 }
+
+func TestNewAssetHandlerWithOptionsReturnsNotModifiedForMatchingETag(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{MdictBase: &MdictBase{fileType: MdictTypeMdd, meta: &mdictMeta{}}}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandlerWithOptions(mdd, AssetHandlerOptions{EnableETag: true})
+	firstReq := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	require.Equal(t, http.StatusOK, firstRec.Code)
+	etag := firstRec.Header().Get("ETag")
+	require.NotEmpty(t, etag)
+
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	req.Header.Set("If-None-Match", etag)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotModified, rec.Code)
+	assert.Empty(t, rec.Body.Bytes())
+	assert.Equal(t, etag, rec.Header().Get("ETag"))
+}
+
+func TestNewAssetHandlerWithOptionsReturnsNotModifiedForIfModifiedSince(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{MdictBase: &MdictBase{fileType: MdictTypeMdd, meta: &mdictMeta{creationDate: "2026-04-22"}}}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandlerWithOptions(mdd, AssetHandlerOptions{EnableLastModified: true})
+	firstReq := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	require.Equal(t, http.StatusOK, firstRec.Code)
+	lastModified := firstRec.Header().Get("Last-Modified")
+	require.NotEmpty(t, lastModified)
+
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	req.Header.Set("If-Modified-Since", lastModified)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotModified, rec.Code)
+	assert.Empty(t, rec.Body.Bytes())
+}

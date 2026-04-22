@@ -264,6 +264,8 @@ func main() {
 
 For callers that need explicit HTTP cache semantics, `NewAssetHandlerWithOptions` can customize `Cache-Control` and enable `ETag` / `Last-Modified` headers. Conditional requests using `If-None-Match` and `If-Modified-Since` are also supported through the same ServeContent-based path.
 
+Note on audio playback: this library can resolve and serve raw audio resources from MDX/MDD files (including real `sound://...` / `snd://...` references), but browser playback still depends on whether the client can decode the underlying audio format. In particular, `.spx` (Speex) assets usually require transcoding or an application-level playback backend outside this core library.
+
 A runnable demo is available at `examples/http-server`:
 
 ```bash

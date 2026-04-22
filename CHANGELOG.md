@@ -30,3 +30,4 @@
   - `NewAssetHandlerWithOptions(...)` was manually verified against the same real image asset, confirming custom `Cache-Control`, `ETag`, and `Last-Modified` headers.
   - Real conditional requests against the same image asset returned `304 Not Modified` for both `If-None-Match` and `If-Modified-Since`.
 - The local validation directory is **not** used by repository or CI tests.
+- Verified with the real `MW11sound.mdx/.mdd` sample that audio resources are resolvable, while browser-native playback for `.spx` remains an application-layer concern rather than a core-library guarantee.

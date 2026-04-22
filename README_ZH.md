@@ -265,6 +265,8 @@ func main() {
 
 如果调用方需要更明确的 HTTP 缓存语义，可以使用 `NewAssetHandlerWithOptions` 来自定义 `Cache-Control`，并启用 `ETag` / `Last-Modified` 头。 同一条基于 `ServeContent` 的交付路径也支持 `If-None-Match` 和 `If-Modified-Since` 条件请求。
 
+关于音频播放：本库可以正确解析并提供 MDX/MDD 中的原始音频资源（包括真实的 `sound://...` / `snd://...` 引用），但浏览器能否直接播放仍取决于客户端是否支持底层音频格式。尤其是 `.spx`（Speex）资源，通常需要在上层应用中做转码，或由应用侧提供专门的播放后端。
+
 仓库中还提供了一个可直接运行的示例：`examples/http-server`
 
 ```bash

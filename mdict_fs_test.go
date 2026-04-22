@@ -47,3 +47,20 @@ func TestMdictFSIntegration_OpenMDDResourceCaseInsensitive(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, data)
 }
+
+func TestMdictFSIntegration_OpenMDDResourceComparableKey(t *testing.T) {
+	manifest := loadFixtureManifest(t)
+
+	dict, err := New(manifest.MDDPath)
+	require.NoError(t, err)
+	require.NoError(t, dict.BuildIndex())
+
+	mfs := NewMdictFS(dict)
+	file, err := mfs.Open("/Accordion_Concertina.jpg")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+
+	data, err := io.ReadAll(file)
+	require.NoError(t, err)
+	assert.NotEmpty(t, data)
+}

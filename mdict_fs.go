@@ -88,6 +88,23 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 			}
 		}
 
+		if foundEntry == nil && mfs.mdict.comparableLookup != nil {
+			for _, candidate := range AssetLookupCandidates(name) {
+				normalized := normalizeResourceComparableKey(candidate)
+				if normalized == "" {
+					continue
+				}
+				entry, ok := mfs.mdict.resourceComparableLookup[normalized]
+				if !ok || entry == nil {
+					continue
+				}
+				foundEntry = entry
+				log.Debugf("MdictFS: Found MDD entry for '%s' using comparable candidate '%s' (keyword '%s')", name, candidate, foundEntry.KeyWord)
+				fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
+				break
+			}
+		}
+
 		if foundEntry == nil {
 			log.Debugf("MdictFS: MDD resource '%s' not found in keyword entries after candidate expansion.", name)
 			lookupErr = fs.ErrNotExist

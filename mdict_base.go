@@ -1172,11 +1172,13 @@ func (mdict *MdictBase) buildExactLookup() {
 	if mdict.keyBlockData == nil {
 		mdict.exactLookup = nil
 		mdict.comparableLookup = nil
+		mdict.resourceComparableLookup = nil
 		return
 	}
 
 	lookup := make(map[string]*MDictKeywordEntry, len(mdict.keyBlockData.keyEntries))
 	comparable := make(map[string]*MDictKeywordEntry, len(mdict.keyBlockData.keyEntries))
+	resourceComparable := make(map[string]*MDictKeywordEntry, len(mdict.keyBlockData.keyEntries))
 	for _, entry := range mdict.keyBlockData.keyEntries {
 		if entry == nil {
 			continue
@@ -1189,7 +1191,13 @@ func (mdict *MdictBase) buildExactLookup() {
 				comparable[normalized] = entry
 			}
 		}
+		if normalized := normalizeResourceComparableKey(entry.KeyWord); normalized != "" {
+			if _, exists := resourceComparable[normalized]; !exists {
+				resourceComparable[normalized] = entry
+			}
+		}
 	}
 	mdict.exactLookup = lookup
 	mdict.comparableLookup = comparable
+	mdict.resourceComparableLookup = resourceComparable
 }

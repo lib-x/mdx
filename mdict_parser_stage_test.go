@@ -83,6 +83,7 @@ func TestMdictBaseBuildExactLookup_FindsUnsortedEntry(t *testing.T) {
 	base.buildExactLookup()
 	require.NotNil(t, base.exactLookup)
 	require.NotNil(t, base.comparableLookup)
+	require.NotNil(t, base.resourceComparableLookup)
 	assert.Same(t, ability, base.exactLookup["ability"])
 	assert.Same(t, ability, base.comparableLookup["ability"])
 }

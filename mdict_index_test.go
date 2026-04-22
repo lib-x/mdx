@@ -194,6 +194,8 @@ func TestDictionaryInfoAndExportIndexIntegration(t *testing.T) {
 	rewritten, err := LookupAndRewriteHTML(dict, fixtureSampleMDXWord, "/assets")
 	require.NoError(t, err)
 	assert.Contains(t, string(rewritten), `/assets/oalecd9.css`)
+	assert.Contains(t, string(rewritten), `<audio controls src="/assets/snd:%2F%2Fability__gb_1.spx">`)
+	assert.NotContains(t, string(rewritten), `entry://entry://`)
 }
 
 func TestMDDExportIndexIntegration(t *testing.T) {

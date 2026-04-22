@@ -11,6 +11,7 @@
 ### Changed
 - Routed `MdictFS` and `NewAssetHandler` through the shared `AssetResolver` so file-system and HTTP delivery now use the same resource semantics.
 - Resolver-backed asset HTTP delivery now uses `http.ServeContent`, adding browser-friendly `Range` handling and a default `Cache-Control: public, max-age=3600` policy.
+- `examples/http-server-redis` now uses the same browser-facing rewrite pipeline as the other HTTP examples, including internal-link cleanup and audio-link adaptation.
 - `LookupAndRewriteHTML()` now rewrites resource URLs, normalizes malformed internal `entry://entry://...` links, and upgrades audio anchors to browser-playable `<audio controls>` blocks.
 - Resource redirect handling now follows UTF-16LE `@@@LINK=` records with loop protection.
 - Dictionary pair setup now defaults to sidecar-first resource lookup using the MDX directory plus any discovered companion MDD volumes.

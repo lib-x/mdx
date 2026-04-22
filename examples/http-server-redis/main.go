@@ -100,6 +100,8 @@ func main() {
 		}
 
 		rewritten := mdx.RewriteEntryResourceURLs(content, assetPrefix)
+		rewritten = mdx.RewriteEntryInternalLinks(rewritten)
+		rewritten = mdx.RewriteEntryAudioLinks(rewritten, assetPrefix)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(rewritten)
 	})

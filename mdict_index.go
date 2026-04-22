@@ -251,9 +251,32 @@ func AssetLookupCandidates(ref string) []string {
 		candidates = append(candidates, ref[idx+3:])
 	}
 
-	seen := make(map[string]struct{}, len(candidates))
-	deduped := make([]string, 0, len(candidates))
+	expanded := make([]string, 0, len(candidates)*4)
 	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		expanded = append(expanded, trimmed)
+
+		normalized := strings.TrimPrefix(trimmed, "/")
+		if normalized != trimmed {
+			expanded = append(expanded, normalized)
+		}
+
+		mddKey := NormalizeMDDKey(trimmed)
+		expanded = append(expanded, mddKey)
+
+		withoutExt := strings.TrimSuffix(normalized, path.Ext(normalized))
+		if withoutExt != "" && withoutExt != normalized {
+			expanded = append(expanded, withoutExt)
+			expanded = append(expanded, NormalizeMDDKey(withoutExt))
+		}
+	}
+
+	seen := make(map[string]struct{}, len(expanded))
+	deduped := make([]string, 0, len(expanded))
+	for _, candidate := range expanded {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			continue

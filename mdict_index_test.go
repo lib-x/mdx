@@ -48,8 +48,13 @@ func TestRewriteEntryResourceURLs(t *testing.T) {
 func TestAssetLookupCandidates(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, []string{"accordion_concertina.jpg"}, AssetLookupCandidates("accordion_concertina.jpg"))
-	assert.Equal(t, []string{"snd://ability__gb_1.spx", "ability__gb_1.spx"}, AssetLookupCandidates("snd://ability__gb_1.spx"))
+	imageCandidates := AssetLookupCandidates("accordion_concertina.jpg")
+	assert.Contains(t, imageCandidates, "accordion_concertina.jpg")
+	assert.Contains(t, imageCandidates, `\accordion_concertina.jpg`)
+
+	audioCandidates := AssetLookupCandidates("snd://ability__gb_1.spx")
+	assert.Contains(t, audioCandidates, "snd://ability__gb_1.spx")
+	assert.Contains(t, audioCandidates, "ability__gb_1.spx")
 }
 
 func TestMemoryIndexStore(t *testing.T) {

@@ -72,22 +72,24 @@ func (mfs *MdictFS) Open(name string) (fs.File, error) {
 
 	if mfs.mdict.IsMDD() {
 		log.Debugf("MdictFS: MDD file, attempting to find resource: '%s'", name)
-		actualName := NormalizeMDDKey(name)
-
-		var foundEntry *MDictKeywordEntry
 		entries, _ := mfs.mdict.GetKeyWordEntries()
-		for _, entry := range entries {
-			if strings.EqualFold(entry.KeyWord, actualName) {
-				foundEntry = entry
+		var foundEntry *MDictKeywordEntry
+		for _, candidate := range AssetLookupCandidates(name) {
+			for _, entry := range entries {
+				if strings.EqualFold(entry.KeyWord, candidate) {
+					foundEntry = entry
+					break
+				}
+			}
+			if foundEntry != nil {
+				log.Debugf("MdictFS: Found MDD entry for '%s' using candidate '%s' (keyword '%s')", name, candidate, foundEntry.KeyWord)
+				fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
 				break
 			}
 		}
 
-		if foundEntry != nil {
-			log.Debugf("MdictFS: Found MDD entry for '%s' (keyword '%s')", name, foundEntry.KeyWord)
-			fileContent, lookupErr = mfs.mdict.LocateByKeywordEntry(foundEntry)
-		} else {
-			log.Debugf("MdictFS: MDD resource '%s' (normalized: '%s') not found in keyword entries.", name, actualName)
+		if foundEntry == nil {
+			log.Debugf("MdictFS: MDD resource '%s' not found in keyword entries after candidate expansion.", name)
 			lookupErr = fs.ErrNotExist
 		}
 	} else { // MDX file

@@ -1,4 +1,4 @@
-module github.com/lib-x/md
+module github.com/lib-x/mdx
 
 go 1.24.4
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	mdx "mdx"
+	mdx "github.com/lib-x/mdx"
 
 	"github.com/redis/go-redis/v9"
 )

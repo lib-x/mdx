@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	mdx "mdx"
+	mdx "github.com/lib-x/mdx"
 )
 
 func main() {

@@ -10,6 +10,7 @@
 
 ### Changed
 - Routed `MdictFS` and `NewAssetHandler` through the shared `AssetResolver` so file-system and HTTP delivery now use the same resource semantics.
+- Resolver-backed asset HTTP delivery now uses `http.ServeContent`, adding browser-friendly `Range` handling and a default `Cache-Control: public, max-age=3600` policy.
 - `LookupAndRewriteHTML()` now rewrites resource URLs, normalizes malformed internal `entry://entry://...` links, and upgrades audio anchors to browser-playable `<audio controls>` blocks.
 - Resource redirect handling now follows UTF-16LE `@@@LINK=` records with loop protection.
 - Dictionary pair setup now defaults to sidecar-first resource lookup using the MDX directory plus any discovered companion MDD volumes.
@@ -20,4 +21,5 @@
   - CSS and image resources rewrite to `/assets/...`.
   - `snd://` audio links upgrade to playable HTML audio output.
   - duplicated `entry://entry://...` links are normalized.
+  - resolver-backed asset HTTP delivery returns `206 Partial Content` with `Content-Range` and cache headers for a real image asset.
 - The local validation directory is **not** used by repository or CI tests.

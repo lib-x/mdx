@@ -274,3 +274,51 @@ func TestNewAssetHandlerUsesResolverForMDD(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, []byte("resolver-audio"), rec.Body.Bytes())
 }
+
+func TestNewAssetHandlerSupportsRangeRequests(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{
+		MdictBase: &MdictBase{
+			fileType: MdictTypeMdd,
+			meta:     &mdictMeta{},
+		},
+	}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandler(mdd)
+
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	req.Header.Set("Range", "bytes=0-7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusPartialContent, rec.Code)
+	assert.Equal(t, []byte("resolver"), rec.Body.Bytes())
+	assert.Contains(t, rec.Header().Get("Content-Range"), "bytes 0-7/14")
+}
+
+func TestNewAssetHandlerSetsCacheControlForSuccessfulResponses(t *testing.T) {
+	t.Parallel()
+
+	mdd := &Mdict{
+		MdictBase: &MdictBase{
+			fileType: MdictTypeMdd,
+			meta:     &mdictMeta{},
+		},
+	}
+	mdd.assetResolver = NewAssetResolver(nil, WithAssetSource(fakeAssetSource{assets: map[string][]byte{
+		"audio/test.spx": []byte("resolver-audio"),
+	}}))
+
+	handler := NewAssetHandler(mdd)
+
+	req := httptest.NewRequest(http.MethodGet, "/sound:%2F%2Faudio%2Ftest.spx", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
+}

@@ -1,10 +1,12 @@
 package mdx
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // LookupAndRewriteHTML looks up an MDX entry and rewrites its asset URLs for web delivery.
@@ -49,9 +51,15 @@ func NewAssetHandler(mdd *Mdict) http.Handler {
 			return
 		}
 
+		w.Header().Set("Cache-Control", "public, max-age=3600")
 		if contentType := http.DetectContentType(data); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
-		_, _ = w.Write(data)
+
+		name := assetSidecarPath(raw)
+		if name == "" {
+			name = raw
+		}
+		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
 	})
 }

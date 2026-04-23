@@ -136,3 +136,39 @@ func TestRedisIndexStorePut_BatchesMembersPerPrefix(t *testing.T) {
 	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:abi"])
 	assert.Equal(t, 1, backend.saddCalls["batch:index:demo:prefix:abl"])
 }
+
+func TestRedisIndexStore_ManifestAndDeleteDictionary(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil,
+		WithRedisIndexContext(context.Background()),
+		WithRedisKeyPrefix("managed:index"),
+	)
+	store.backend = backend
+
+	info := DictionaryInfo{Name: "demo"}
+	entries := []IndexEntry{{Keyword: "ability"}}
+	require.NoError(t, store.Put(info, entries))
+
+	manifest := IndexManifest{
+		DictionaryName: "demo",
+		SourcePath:     "/tmp/demo.mdx",
+		Fingerprint:    "fp",
+		SchemaVersion:  "v1",
+	}
+	require.NoError(t, store.SaveManifest(manifest))
+
+	loaded, err := store.LoadManifest("demo")
+	require.NoError(t, err)
+	assert.Equal(t, manifest.DictionaryName, loaded.DictionaryName)
+	assert.Equal(t, manifest.Fingerprint, loaded.Fingerprint)
+
+	require.NoError(t, store.DeleteDictionary("demo"))
+	_, err = store.LoadManifest("demo")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrIndexMiss))
+	_, err = store.GetExact("demo", "ability")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrIndexMiss))
+}

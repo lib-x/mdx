@@ -30,17 +30,19 @@ type FuzzyIndexStore interface {
 // ErrIndexMiss is returned when no entry exists in the external index store.
 var ErrIndexMiss = errors.New("index entry not found")
 
-// MemoryIndexStore is a small in-memory reference implementation of IndexStore.
+// MemoryIndexStore is a small in-memory reference implementation of ManagedIndexStore.
 type MemoryIndexStore struct {
-	entriesByDict map[string][]IndexEntry
-	exactByDict   map[string]map[string]IndexEntry
+	entriesByDict   map[string][]IndexEntry
+	exactByDict     map[string]map[string]IndexEntry
+	manifestsByDict map[string]IndexManifest
 }
 
 // NewMemoryIndexStore creates a new in-memory store.
 func NewMemoryIndexStore() *MemoryIndexStore {
 	return &MemoryIndexStore{
-		entriesByDict: make(map[string][]IndexEntry),
-		exactByDict:   make(map[string]map[string]IndexEntry),
+		entriesByDict:   make(map[string][]IndexEntry),
+		exactByDict:     make(map[string]map[string]IndexEntry),
+		manifestsByDict: make(map[string]IndexManifest),
 	}
 }
 
@@ -105,6 +107,32 @@ func (s *MemoryIndexStore) PrefixSearch(dictionaryName, prefix string, limit int
 		return nil, ErrIndexMiss
 	}
 	return results, nil
+}
+
+// LoadManifest returns lifecycle metadata for one dictionary.
+func (s *MemoryIndexStore) LoadManifest(dictionaryName string) (IndexManifest, error) {
+	manifest, ok := s.manifestsByDict[dictionaryName]
+	if !ok {
+		return IndexManifest{}, ErrIndexMiss
+	}
+	return manifest, nil
+}
+
+// SaveManifest stores lifecycle metadata for one dictionary.
+func (s *MemoryIndexStore) SaveManifest(manifest IndexManifest) error {
+	if strings.TrimSpace(manifest.DictionaryName) == "" {
+		return errors.New("dictionary name is required")
+	}
+	s.manifestsByDict[manifest.DictionaryName] = manifest
+	return nil
+}
+
+// DeleteDictionary removes one dictionary's entries and manifest.
+func (s *MemoryIndexStore) DeleteDictionary(dictionaryName string) error {
+	delete(s.entriesByDict, dictionaryName)
+	delete(s.exactByDict, dictionaryName)
+	delete(s.manifestsByDict, dictionaryName)
+	return nil
 }
 
 // MemoryFuzzyIndexStore is a small in-memory reference implementation of FuzzyIndexStore.
@@ -218,7 +246,7 @@ func fuzzyScore(query, key string) (float64, string, bool) {
 	}
 
 	score := 1 - float64(distance)/float64(maxLen)
-	if score < 0.55 {
+	if score < 0.5 {
 		return 0, "", false
 	}
 	return score, "edit-distance", true
@@ -237,7 +265,7 @@ func levenshteinDistance(a, b string) int {
 
 	prev := make([]int, len(b)+1)
 	curr := make([]int, len(b)+1)
-	for j := range len(b) + 1 {
+	for j := range prev {
 		prev[j] = j
 	}
 
@@ -248,19 +276,12 @@ func levenshteinDistance(a, b string) int {
 			if a[i-1] != b[j-1] {
 				cost = 1
 			}
-
-			curr[j] = min3(
-				curr[j-1]+1,
-				prev[j]+1,
-				prev[j-1]+cost,
-			)
+			deletion := prev[j] + 1
+			insertion := curr[j-1] + 1
+			substitution := prev[j-1] + cost
+			curr[j] = min(deletion, min(insertion, substitution))
 		}
-		copy(prev, curr)
+		prev, curr = curr, prev
 	}
-
 	return prev[len(b)]
-}
-
-func min3(a, b, c int) int {
-	return min(a, min(b, c))
 }

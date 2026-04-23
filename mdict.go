@@ -73,10 +73,9 @@ func (mdict *Mdict) init() error {
 	return nil
 }
 
-// BuildIndex builds the complete dictionary index.
-// This process can consume significant memory and time as it needs to read all keyword and record block information.
-// It is recommended to call this once during program initialization.
-func (mdict *Mdict) BuildIndex() error {
+// PrepareForExternalIndex loads the minimum structures needed for ExportIndex and Resolve.
+// It avoids building the in-memory exact/comparable lookup tables used by BuildIndex.
+func (mdict *Mdict) PrepareForExternalIndex() error {
 	if err := mdict.readKeyBlockInfo(); err != nil {
 		return err
 	}
@@ -94,8 +93,18 @@ func (mdict *Mdict) BuildIndex() error {
 	}
 
 	mdict.buildRecordRangeTree()
-	mdict.buildExactLookup()
+	return nil
+}
 
+// BuildIndex builds the complete dictionary index.
+// This process can consume significant memory and time as it needs to read all keyword and record block information.
+// It is recommended to call this once during program initialization.
+func (mdict *Mdict) BuildIndex() error {
+	if err := mdict.PrepareForExternalIndex(); err != nil {
+		return err
+	}
+
+	mdict.buildExactLookup()
 	return nil
 }
 

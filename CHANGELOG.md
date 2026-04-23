@@ -1,3 +1,8 @@
+## Unreleased
+
+- Added lifecycle-aware external indexing APIs: `PrepareForExternalIndex`, `EnsureDictionaryIndex`, `BuildIndexManifest`, `ManagedIndexStore`, `IndexManifest`, and functional sync options for reuse / missing-source TTL / schema / clock / fingerprinter overrides.
+- Extended the in-memory and Redis index stores with manifest persistence and dictionary-wide deletion so Redis remains one `ManagedIndexStore` implementation among future KV backends.
+
 # Changelog
 
 ## Unreleased

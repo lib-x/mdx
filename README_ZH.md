@@ -132,6 +132,25 @@ fmt.Println(len(entries), len(resources))
 
 库现在提供了一个最小的 `IndexStore` 边界。你可以自己实现 Redis、SQL 或其他后端适配。仓库内也附带了一个小型内存实现：
 
+如果你要做带生命周期管理的外部索引，建议使用 `EnsureDictionaryIndex(...)` 配合 `ManagedIndexStore`。它会通过 manifest/fingerprint 自动复用未变化的索引，支持“源词典缺失时保留多久”的 TTL，并且 Redis 只是其中一个实现：
+
+```go
+store := mdx.NewRedisIndexStore(client)
+
+result, err := mdx.EnsureDictionaryIndex(
+    "/path/to/dictionary.mdx",
+    store,
+    mdx.WithReuseIfUnchanged(true),
+    mdx.WithMissingSourceTTL(24*time.Hour),
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Reused, result.Rebuilt)
+```
+
+如果你只是想走导出/回查链路，但不想构建内存 exact lookup，可改用 `PrepareForExternalIndex()` 而不是 `BuildIndex()`。
+
 ```go
 store := mdx.NewMemoryIndexStore()
 

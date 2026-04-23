@@ -88,7 +88,7 @@ func WithRedisPrefixIndexMaxLen(maxLen int) RedisIndexStoreOption {
 	}
 }
 
-// RedisIndexStore is a Redis-backed reference implementation of IndexStore.
+// RedisIndexStore is a Redis-backed reference implementation of ManagedIndexStore.
 type RedisIndexStore struct {
 	ctx               context.Context
 	prefix            string
@@ -124,6 +124,10 @@ func (s *RedisIndexStore) dictExactKey(dictionaryName, keyword string) string {
 
 func (s *RedisIndexStore) dictPrefixSetKey(dictionaryName, prefix string) string {
 	return s.prefix + ":" + dictionaryName + ":prefix:" + prefix
+}
+
+func (s *RedisIndexStore) dictManifestKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":manifest"
 }
 
 // Put stores dictionary metadata and index entries in Redis.
@@ -261,4 +265,51 @@ func (s *RedisIndexStore) PrefixSearch(dictionaryName, prefix string, limit int)
 		return nil, ErrIndexMiss
 	}
 	return results, nil
+}
+
+// LoadManifest returns lifecycle metadata for one dictionary.
+func (s *RedisIndexStore) LoadManifest(dictionaryName string) (IndexManifest, error) {
+	raw, err := s.backend.Get(s.ctx, s.dictManifestKey(dictionaryName))
+	if err != nil {
+		return IndexManifest{}, err
+	}
+	var manifest IndexManifest
+	if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
+		return IndexManifest{}, err
+	}
+	return manifest, nil
+}
+
+// SaveManifest stores lifecycle metadata for one dictionary.
+func (s *RedisIndexStore) SaveManifest(manifest IndexManifest) error {
+	if strings.TrimSpace(manifest.DictionaryName) == "" {
+		return errors.New("dictionary name is required")
+	}
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return s.backend.Set(s.ctx, s.dictManifestKey(manifest.DictionaryName), string(payload))
+}
+
+// DeleteDictionary removes one dictionary's entries and manifest.
+func (s *RedisIndexStore) DeleteDictionary(dictionaryName string) error {
+	keysSet := s.dictKeysSetKey(dictionaryName)
+	prefixRegistry := s.dictPrefixRegistryKey(dictionaryName)
+	oldKeys, err := s.backend.SMembers(s.ctx, keysSet)
+	if err != nil && !errors.Is(err, ErrIndexMiss) {
+		return err
+	}
+	oldPrefixSets, err := s.backend.SMembers(s.ctx, prefixRegistry)
+	if err != nil && !errors.Is(err, ErrIndexMiss) {
+		return err
+	}
+
+	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+3)
+	toDelete = append(toDelete, keysSet, prefixRegistry, s.dictManifestKey(dictionaryName))
+	for _, keyword := range oldKeys {
+		toDelete = append(toDelete, s.dictExactKey(dictionaryName, keyword))
+	}
+	toDelete = append(toDelete, oldPrefixSets...)
+	return s.backend.Del(s.ctx, toDelete...)
 }

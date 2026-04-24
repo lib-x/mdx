@@ -33,7 +33,7 @@ import (
 // It first calls readMDictFileHeader to read the raw header data from the file,
 // then validates the checksum, and finally parses the XML-formatted header info to populate the meta struct.
 func (mdict *MdictBase) readDictHeader() error {
-	log.Infof("Reading dictionary header: %s", mdict.filePath)
+	log.Debugf("Reading dictionary header: %s", mdict.filePath)
 	dictHeader, err := readMDictFileHeader(mdict.filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read MDict file header for '%s': %w", mdict.filePath, err)
@@ -182,7 +182,7 @@ func readMDictFileHeader(filename string) (*mdictHeader, error) {
 
 // readKeyBlockMeta reads the metadata of the key block.
 func (mdict *MdictBase) readKeyBlockMeta() error {
-	log.Infof("Reading key block metadata: %s", mdict.filePath)
+	log.Debugf("Reading key block metadata: %s", mdict.filePath)
 	file, err := os.Open(mdict.filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for reading key block metadata: %w", mdict.filePath, err)
@@ -1095,7 +1095,7 @@ func _fetchAndDecodeRecordBlock(filePath string, fileOffset int64, compressedSiz
 }
 
 func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRecordEncrypted, isMdd, isUtf16 bool, keywordForLog string) ([]byte, error) {
-	log.Infof("Locating definition for keyword '%s' using index: %+v", keywordForLog, index.RecordBlock)
+	log.Debugf("Locating definition for keyword '%s' using index: %+v", keywordForLog, index.RecordBlock)
 
 	decompressedRecordBlock, err := _fetchAndDecodeRecordBlock(filePath,
 		index.RecordBlock.DataStartOffset,
@@ -1121,12 +1121,12 @@ func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRe
 	data := decompressedRecordBlock[start:end]
 
 	if isMdd {
-		log.Infof("Returning raw MDD data for '%s' (length %d)", keywordForLog, len(data))
+		log.Debugf("Returning raw MDD data for '%s' (length %d)", keywordForLog, len(data))
 		return data, nil
 	}
 
 	if isUtf16 {
-		log.Infof("Decoding UTF-16 data for keyword '%s' (original length %d)", keywordForLog, len(data))
+		log.Debugf("Decoding UTF-16 data for keyword '%s' (original length %d)", keywordForLog, len(data))
 		datastr, err1 := decodeLittleEndianUtf16(data)
 		if err1 != nil {
 			log.Errorf("UTF-16 decoding failed for keyword '%s': %v", keywordForLog, err1)
@@ -1136,7 +1136,7 @@ func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRe
 		return []byte(datastr), nil
 	}
 
-	log.Infof("Returning data for keyword '%s' (length %d, encoding assumed UTF-8 or similar)", keywordForLog, len(data))
+	log.Debugf("Returning data for keyword '%s' (length %d, encoding assumed UTF-8 or similar)", keywordForLog, len(data))
 	return data, nil
 }
 

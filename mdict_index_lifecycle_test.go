@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -67,6 +69,77 @@ func TestEnsureDictionaryIndex_ReusesMatchingManifest(t *testing.T) {
 	assert.True(t, result.Reused)
 	assert.False(t, result.Rebuilt)
 	assert.Equal(t, manifest.Fingerprint, result.Manifest.Fingerprint)
+}
+
+func TestEnsureDictionaryIndex_SerializesConcurrentRebuildsForSameSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	dictPath := filepath.Join(tmpDir, "demo.mdx")
+	require.NoError(t, os.WriteFile(dictPath, []byte("demo"), 0o644))
+
+	store := NewMemoryIndexStore()
+	cfg := ResolveIndexSyncConfig(WithClock(func() time.Time {
+		return time.Unix(1700000100, 0).UTC()
+	}))
+
+	var openCalls atomic.Int32
+	start := make(chan struct{})
+	firstOpen := make(chan struct{})
+	releaseOpen := make(chan struct{})
+	opener := func(string) (externalIndexDictionary, error) {
+		if openCalls.Add(1) == 1 {
+			close(firstOpen)
+		}
+		<-releaseOpen
+		return &stubExternalIndexDict{
+			name:    "demo",
+			info:    DictionaryInfo{Name: "demo"},
+			entries: []IndexEntry{{Keyword: "ability"}},
+		}, nil
+	}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	results := make(chan *EnsureIndexResult, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := ensureDictionaryIndexWithDeps(dictPath, store, cfg, opener)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}()
+	}
+
+	close(start)
+	<-firstOpen
+	time.Sleep(20 * time.Millisecond)
+	close(releaseOpen)
+	wg.Wait()
+	close(errs)
+	close(results)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(1), openCalls.Load())
+
+	rebuilt := 0
+	reused := 0
+	for result := range results {
+		if result.Rebuilt {
+			rebuilt++
+		}
+		if result.Reused {
+			reused++
+		}
+	}
+	assert.Equal(t, 1, rebuilt)
+	assert.Equal(t, callers-1, reused)
 }
 
 func TestEnsureDictionaryIndex_RebuildsWhenFingerprintChanges(t *testing.T) {

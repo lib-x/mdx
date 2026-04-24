@@ -208,7 +208,7 @@ func (mdict *Mdict) lookupWithRedirects(word string, depth int, seen map[string]
 		return nil, fmt.Errorf("word not found: (%s)", word)
 	}
 
-	log.Infof("mdict.Lookup hit key:(%s)", word)
+	log.Debugf("mdict.Lookup hit key:(%s)", word)
 	content, err := mdict.ResolveEntry(entry)
 	if err != nil {
 		return nil, err

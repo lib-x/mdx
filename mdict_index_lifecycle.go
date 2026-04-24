@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const defaultIndexSchemaVersion = "v1"
+
+var indexSyncLocks sync.Map
 
 // Fingerprinter computes a stable fingerprint for a dictionary source.
 type Fingerprinter interface {
@@ -203,6 +206,9 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		return nil, errors.New("dictionary opener is required")
 	}
 
+	unlock := lockIndexSync(dictPath)
+	defer unlock()
+
 	dictName := dictionaryNameFromPath(dictPath)
 	manifest, manifestErr := store.LoadManifest(dictName)
 	if manifestErr != nil && !errors.Is(manifestErr, ErrIndexMiss) {
@@ -264,6 +270,22 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		Rebuilt:        true,
 		Manifest:       manifest,
 	}, nil
+}
+
+func lockIndexSync(dictPath string) func() {
+	key := indexSyncLockKey(dictPath)
+	value, _ := indexSyncLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func indexSyncLockKey(dictPath string) string {
+	absPath, err := filepath.Abs(dictPath)
+	if err != nil {
+		return dictPath
+	}
+	return absPath
 }
 
 func ensureMissingSourceIndex(dictName string, store ManagedIndexStore, cfg IndexSyncConfig, manifest IndexManifest, manifestErr error) (*EnsureIndexResult, error) {

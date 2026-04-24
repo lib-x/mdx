@@ -32,7 +32,6 @@ var log = logging.MustGetLogger("default")
 // It embeds MdictBase to handle the underlying parsing logic and provides a user-facing API.
 type Mdict struct {
 	*MdictBase
-	rangeTreeRoot *RecordBlockRangeTreeNode
 	assetResolver *AssetResolver
 }
 
@@ -235,7 +234,7 @@ func (mdict *Mdict) LocateByKeywordEntry(entry *MDictKeywordEntry) ([]byte, erro
 	if entry == nil {
 		return nil, errors.New("invalid mdict keyword entry")
 	}
-	return mdict.MdictBase.locateByKeywordEntry(entry)
+	return mdict.locateByKeywordEntry(entry)
 }
 
 // LocateByKeywordIndex locates and returns the definition by keyword index.
@@ -243,7 +242,7 @@ func (mdict *Mdict) LocateByKeywordIndex(index *MDictKeywordIndex) ([]byte, erro
 	if index == nil {
 		return nil, errors.New("invalid mdict keyword index")
 	}
-	return mdict.MdictBase.locateByKeywordIndex(index)
+	return mdict.locateByKeywordIndex(index)
 }
 
 // GetKeyWordEntries returns all keyword entries in the dictionary.
@@ -258,7 +257,7 @@ func (mdict *Mdict) GetKeyWordEntriesSize() int64 {
 
 // KeywordEntryToIndex converts a keyword entry to a more detailed keyword index.
 func (mdict *Mdict) KeywordEntryToIndex(item *MDictKeywordEntry) (*MDictKeywordIndex, error) {
-	return mdict.MdictBase.keywordEntryToIndex(item)
+	return mdict.keywordEntryToIndex(item)
 }
 
 func (mdict *Mdict) readMDDResource(name string) ([]byte, error) {

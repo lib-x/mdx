@@ -45,7 +45,7 @@ func main() {
 	mux.Handle(assetPrefix+"/", http.StripPrefix(assetPrefix+"/", mdx.NewAssetHandler(mddDict)))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `<html><body>
+		_, _ = fmt.Fprintf(w, `<html><body>
 <form action="/entry" method="get">
   <input type="text" name="word" placeholder="enter word" />
   <button type="submit">Lookup</button>

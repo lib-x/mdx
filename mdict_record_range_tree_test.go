@@ -97,7 +97,7 @@ func printRangeTreeOverLevel(t *testing.T, root *RecordBlockRangeTreeNode) {
 		line += fmt.Sprintf("level(%d)\t", le+1)
 		for _, l := range ls {
 			if l == nil {
-				line += fmt.Sprintf("\t")
+				line += "\t"
 			} else {
 				line += fmt.Sprintf("\t[%d, %d](%v)", l.startRange, l.endRange, l.data)
 			}

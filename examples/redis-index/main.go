@@ -29,7 +29,7 @@ func main() {
 	}
 
 	client := redis.NewClient(&redis.Options{Addr: *redisAddr})
-	defer client.Close()
+	defer closeRedisClient(client)
 
 	store := mdx.NewRedisIndexStore(client,
 		mdx.WithRedisIndexContext(context.Background()),
@@ -62,5 +62,11 @@ func main() {
 	}
 	for _, match := range matches {
 		fmt.Println(match.Keyword)
+	}
+}
+
+func closeRedisClient(client *redis.Client) {
+	if err := client.Close(); err != nil {
+		log.Printf("close redis client: %v", err)
 	}
 }

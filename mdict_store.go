@@ -91,11 +91,11 @@ func (s *MemoryIndexStore) PrefixSearch(dictionaryName, prefix string, limit int
 		return nil, ErrIndexMiss
 	}
 
-	prefix = strings.TrimSpace(prefix)
+	prefixLower := strings.ToLower(strings.TrimSpace(prefix))
 	results := make([]IndexEntry, 0)
 	for _, entry := range entries {
 		key := indexStoreLookupKey(entry)
-		if prefix == "" || strings.HasPrefix(strings.ToLower(key), strings.ToLower(prefix)) {
+		if prefixLower == "" || strings.HasPrefix(strings.ToLower(key), prefixLower) {
 			results = append(results, entry)
 		}
 		if limit > 0 && len(results) >= limit {

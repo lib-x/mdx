@@ -21,7 +21,6 @@ import (
 	"compress/zlib"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"regexp"
 	"strings"
@@ -69,21 +68,6 @@ func bigEndianBinToUTF8(bytes []byte, offset int, length int) string {
 	return string(cbytes)
 }
 
-func binSlice(srcByte []byte, offset int, length int, distByte []byte) int {
-	srcByteLen := len(srcByte)
-	if offset < 0 || offset > srcByteLen-1 {
-		return -1
-	}
-	if offset+length > srcByteLen {
-		return -2
-	}
-	for i := 0; i < length; i++ {
-		distByte[i] = srcByte[i+offset]
-	}
-
-	return 0
-}
-
 func beBinToU64(bin []byte) uint64 {
 	var n uint64 = 0
 	for i := 0; i < 7; i++ {
@@ -116,6 +100,12 @@ func beBinToU16(bin []byte) uint16 {
 
 func beBinToU8(bin []byte) uint8 {
 	return uint8(bin[0] & 255)
+}
+
+func closeFile(file *os.File) {
+	if err := file.Close(); err != nil {
+		log.Warningf("failed to close file %s: %v", file.Name(), err)
+	}
 }
 
 func readFileFromPos(file *os.File, start, length int64) ([]byte, error) {
@@ -164,10 +154,13 @@ func zlibDecompress(data []byte, from, len int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer z.Close()
-	p, err := ioutil.ReadAll(z)
-	if err != nil {
-		return nil, err
+	p, readErr := io.ReadAll(z)
+	closeErr := z.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	return p, nil
 }

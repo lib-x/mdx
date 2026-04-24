@@ -44,7 +44,7 @@ func main() {
 	}
 
 	client := redis.NewClient(&redis.Options{Addr: *redisAddr})
-	defer client.Close()
+	defer closeRedisClient(client)
 	store := mdx.NewRedisIndexStore(client,
 		mdx.WithRedisIndexContext(context.Background()),
 		mdx.WithRedisKeyPrefix("mdx:index"),
@@ -68,7 +68,7 @@ func main() {
 	mux.Handle(assetPrefix+"/", http.StripPrefix(assetPrefix+"/", mdx.NewAssetHandler(mddDict)))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `<html><body>
+		_, _ = fmt.Fprintf(w, `<html><body>
 <h1>%s</h1>
 <form action="/search" method="get">
   <input type="text" name="prefix" placeholder="search prefix" />
@@ -125,4 +125,10 @@ func main() {
 	log.Printf("serving redis-backed entry UI on %s", *listen)
 	log.Printf("assets served under %s/", assetPrefix)
 	log.Fatal(http.ListenAndServe(*listen, mux))
+}
+
+func closeRedisClient(client *redis.Client) {
+	if err := client.Close(); err != nil {
+		log.Printf("close redis client: %v", err)
+	}
 }

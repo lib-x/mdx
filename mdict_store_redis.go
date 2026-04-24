@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -244,6 +245,8 @@ func (s *RedisIndexStore) PrefixSearch(dictionaryName, prefix string, limit int)
 			return nil, err
 		}
 	}
+
+	sort.Strings(keys)
 
 	results := make([]IndexEntry, 0)
 	for _, keyword := range keys {

@@ -3,6 +3,8 @@ package mdx
 import (
 	"encoding/binary"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -86,6 +88,34 @@ func TestAssetResolverReadMissingReturnsNotExist(t *testing.T) {
 	_, err := resolver.Read("missing.css")
 	require.Error(t, err)
 	require.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+func TestAssetResolverSidecarFSRejectsTraversal(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	root := filepath.Join(parent, "assets")
+	require.NoError(t, os.Mkdir(root, 0o755))
+	secret := filepath.Join(parent, "secret.txt")
+	require.NoError(t, os.WriteFile(secret, []byte("secret"), 0o644))
+
+	resolver := NewAssetResolver(nil, WithAssetSidecarDir(root))
+
+	_, err := resolver.Read("../secret.txt")
+	require.Error(t, err)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+}
+
+func TestAssetResolverSidecarFSNormalizesWindowsSeparators(t *testing.T) {
+	t.Parallel()
+
+	resolver := NewAssetResolver(nil, WithAssetSidecarFS(fstest.MapFS{
+		"audio/test.spx": &fstest.MapFile{Data: []byte("audio")},
+	}))
+
+	data, err := resolver.Read(`sound://audio\test.spx`)
+	require.NoError(t, err)
+	require.Equal(t, []byte("audio"), data)
 }
 
 func mdictUTF16Redirect(target string) []byte {

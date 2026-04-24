@@ -2,9 +2,9 @@ package mdx
 
 import (
 	"errors"
-	"os"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"

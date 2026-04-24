@@ -62,10 +62,10 @@ func (mdict *MdictBase) readDictHeader() error {
 
 	// Process encryption flag
 	encrypted := headerInfo.Encrypted
-	switch {
-	case encrypted == "" || encrypted == "No":
+	switch encrypted {
+	case "", "No":
 		meta.encryptType = EncryptNoEnc
-	case encrypted == "Yes":
+	case "Yes":
 		meta.encryptType = EncryptRecordEnc
 	default:
 		if len(encrypted) > 0 && encrypted[0] == '2' {
@@ -137,7 +137,7 @@ func readMDictFileHeader(filename string) (*mdictHeader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file '%s': %w", filename, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	var dictHeaderPartByteSize int64
 
@@ -187,7 +187,7 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for reading key block metadata: %w", mdict.filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	keyBlockMeta := &mdictKeyBlockMeta{}
 	log.Debugf("Key block metadata read settings for '%s'. Version: %.1f, NumberWidth: %d, KeyBlockMetaStartOffset: %d",
@@ -437,7 +437,7 @@ func (mdict *MdictBase) readKeyBlockInfo() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for reading key block info: %w", mdict.filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	log.Debugf("Reading key block info from offset %d, size %d for '%s'", mdict.keyBlockMeta.keyBlockInfoStartOffset, mdict.keyBlockMeta.keyBlockInfoCompressedSize, mdict.filePath)
 	buffer, err := readFileFromPos(file, mdict.keyBlockMeta.keyBlockInfoStartOffset, mdict.keyBlockMeta.keyBlockInfoCompressedSize)
@@ -474,7 +474,7 @@ func (mdict *MdictBase) decodeKeyBlockInfo(data []byte) error {
 
 	// Check compression type
 	compressionType := keyBlockInfoDecryptedBuffer[0:4]
-	if !(compressionType[0] == 2 && compressionType[1] == 0 && compressionType[2] == 0 && compressionType[3] == 0) {
+	if compressionType[0] != 2 || compressionType[1] != 0 || compressionType[2] != 0 || compressionType[3] != 0 {
 		log.Warningf("Compression type of key block info for '%s' is not zlib [02000000], but: %x", mdict.filePath, compressionType)
 		// Some dictionaries may not have a compression type header and are just data.
 	}
@@ -536,8 +536,8 @@ func (mdict *MdictBase) decodeKeyBlockInfo(data []byte) error {
 		}
 		numEntriesCounter += currentEntriesSize
 
-		var stepGap = 0
-		var termSize = textTerm
+		var stepGap int
+		var termSize int
 		if mdict.meta.encoding == EncodingUtf16 || mdict.fileType == MdictTypeMdd {
 			stepGap = (firstKeySize + textTerm) * 2
 			termSize = textTerm * 2
@@ -623,7 +623,7 @@ func (mdict *MdictBase) readKeyEntries() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for reading key entries: %w", mdict.filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	log.Debugf("Reading key entries data for '%s' from offset %d, total size %d", mdict.filePath, mdict.keyBlockInfo.keyBlockEntriesStartOffset, mdict.keyBlockMeta.keyBlockDataTotalSize)
 	buffer, err := readFileFromPos(file,
@@ -780,7 +780,7 @@ func (mdict *MdictBase) readRecordBlockMeta() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for record block metadata: %w", mdict.filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	recordBlockMetaBufferLen := int64(16)
 	if mdict.meta.version >= 2.0 {
@@ -850,7 +850,7 @@ func (mdict *MdictBase) readRecordBlockInfo() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file '%s' for record block info: %w", mdict.filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	recordBlockInfoStartOffset := mdict.recordBlockMeta.keyRecordMetaEndOffset
 	recordBlockInfoLen := mdict.recordBlockMeta.recordBlockInfoCompSize
@@ -1021,7 +1021,7 @@ func _fetchAndDecodeRecordBlock(filePath string, fileOffset int64, compressedSiz
 	if err != nil {
 		return nil, fmt.Errorf("error opening file '%s': %w", filePath, err)
 	}
-	defer file.Close()
+	defer closeFile(file)
 
 	recordBlockDataCompBuff, err := readFileFromPos(file, fileOffset, compressedSize)
 	if err != nil {

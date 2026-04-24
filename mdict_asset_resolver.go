@@ -157,7 +157,7 @@ func (s fsAssetSource) ReadAsset(ref string) ([]byte, error) {
 		}
 		file, err := s.fsys.Open(name)
 		if err == nil {
-			defer file.Close()
+			defer closeFSFile(file)
 			return io.ReadAll(file)
 		}
 		if errors.Is(err, fs.ErrNotExist) {
@@ -166,6 +166,12 @@ func (s fsAssetSource) ReadAsset(ref string) ([]byte, error) {
 		return nil, err
 	}
 	return nil, fs.ErrNotExist
+}
+
+func closeFSFile(file fs.File) {
+	if err := file.Close(); err != nil {
+		log.Warningf("failed to close asset file: %v", err)
+	}
 }
 
 type mdictAssetSource struct {
@@ -180,13 +186,15 @@ func (s mdictAssetSource) ReadAsset(ref string) ([]byte, error) {
 }
 
 func assetSidecarPath(candidate string) string {
-	cleaned := candidate
-	if idx := len(cleaned); idx == 0 {
+	cleaned := strings.TrimSpace(trimResourceScheme(candidate))
+	cleaned = strings.ReplaceAll(cleaned, `\`, "/")
+	cleaned = trimLeadingResourceSeparators(cleaned)
+	if cleaned == "" {
 		return ""
 	}
-	cleaned = trimResourceScheme(cleaned)
-	cleaned = trimLeadingResourceSeparators(cleaned)
-	if cleaned == "" || cleaned == "." {
+
+	cleaned = path.Clean(cleaned)
+	if cleaned == "." || !fs.ValidPath(cleaned) {
 		return ""
 	}
 	return cleaned
@@ -268,15 +276,7 @@ func parseMDictResourceRedirect(data []byte) (string, bool) {
 }
 
 func equalBytes(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(left, right)
 }
 
 type assetBytesFile struct {

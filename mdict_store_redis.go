@@ -2,10 +2,13 @@ package mdx
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -14,10 +17,12 @@ const defaultRedisPrefixIndexMaxLen = 8
 
 type redisIndexBackend interface {
 	Set(ctx context.Context, key, value string) error
+	SetNX(ctx context.Context, key, value string, expiration time.Duration) (bool, error)
 	Get(ctx context.Context, key string) (string, error)
 	SAdd(ctx context.Context, key string, members ...string) error
 	SMembers(ctx context.Context, key string) ([]string, error)
 	Del(ctx context.Context, keys ...string) error
+	CompareAndDelete(ctx context.Context, key, value string) (bool, error)
 }
 
 type redisIndexBackendAdapter struct {
@@ -26,6 +31,14 @@ type redisIndexBackendAdapter struct {
 
 func (r *redisIndexBackendAdapter) Set(ctx context.Context, key, value string) error {
 	return r.client.Set(ctx, key, value, 0).Err()
+}
+
+func (r *redisIndexBackendAdapter) SetNX(ctx context.Context, key, value string, expiration time.Duration) (bool, error) {
+	_, err := r.client.SetArgs(ctx, key, value, redis.SetArgs{Mode: "NX", TTL: expiration}).Result()
+	if errors.Is(err, redis.Nil) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (r *redisIndexBackendAdapter) Get(ctx context.Context, key string) (string, error) {
@@ -57,6 +70,12 @@ func (r *redisIndexBackendAdapter) Del(ctx context.Context, keys ...string) erro
 		return nil
 	}
 	return r.client.Del(ctx, keys...).Err()
+}
+
+func (r *redisIndexBackendAdapter) CompareAndDelete(ctx context.Context, key, value string) (bool, error) {
+	const script = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
+	deleted, err := r.client.Eval(ctx, script, []string{key}, value).Int64()
+	return deleted == 1, err
 }
 
 // RedisIndexStoreOption customizes RedisIndexStore construction.
@@ -129,6 +148,10 @@ func (s *RedisIndexStore) dictPrefixSetKey(dictionaryName, prefix string) string
 
 func (s *RedisIndexStore) dictManifestKey(dictionaryName string) string {
 	return s.prefix + ":" + dictionaryName + ":manifest"
+}
+
+func (s *RedisIndexStore) dictBuildLeaseKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":build-lease"
 }
 
 // Put stores dictionary metadata and index entries in Redis.
@@ -315,4 +338,36 @@ func (s *RedisIndexStore) DeleteDictionary(dictionaryName string) error {
 	}
 	toDelete = append(toDelete, oldPrefixSets...)
 	return s.backend.Del(s.ctx, toDelete...)
+}
+
+// AcquireIndexBuildLease coordinates dictionary index rebuild ownership across processes.
+func (s *RedisIndexStore) AcquireIndexBuildLease(dictionaryName string, ttl time.Duration) (func() error, bool, error) {
+	if strings.TrimSpace(dictionaryName) == "" {
+		return nil, false, errors.New("dictionary name is required")
+	}
+	if ttl <= 0 {
+		return nil, false, errors.New("index build lease ttl must be positive")
+	}
+	token, err := newRedisBuildLeaseToken()
+	if err != nil {
+		return nil, false, err
+	}
+	key := s.dictBuildLeaseKey(dictionaryName)
+	acquired, err := s.backend.SetNX(s.ctx, key, token, ttl)
+	if err != nil || !acquired {
+		return nil, acquired, err
+	}
+	release := func() error {
+		_, err := s.backend.CompareAndDelete(s.ctx, key, token)
+		return err
+	}
+	return release, true, nil
+}
+
+func newRedisBuildLeaseToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
 }

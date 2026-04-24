@@ -1,6 +1,7 @@
 ## Unreleased
 
-- Serialized lifecycle-aware external index rebuilds per source path to prevent concurrent `EnsureDictionaryIndex` calls from repeatedly rebuilding the same unchanged dictionary.
+- Added Redis-backed cross-process index build leases for lifecycle-aware external indexing, preventing multiple app replicas from rebuilding the same unchanged dictionary concurrently.
+- Serialized lifecycle-aware external index rebuilds per source path to prevent concurrent `EnsureDictionaryIndex` calls from repeatedly rebuilding the same unchanged dictionary inside one process.
 - Moved high-volume dictionary parsing and lookup trace logs from info to debug so default application logs stay quieter during indexing and lookup.
 - Added lifecycle-aware external indexing APIs: `PrepareForExternalIndex`, `EnsureDictionaryIndex`, `BuildIndexManifest`, `ManagedIndexStore`, `IndexManifest`, and functional sync options for reuse / missing-source TTL / schema / clock / fingerprinter overrides.
 - Extended the in-memory and Redis index stores with manifest persistence and dictionary-wide deletion so Redis remains one `ManagedIndexStore` implementation among future KV backends.

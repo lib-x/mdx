@@ -30,6 +30,40 @@ func (s *stubExternalIndexDict) ExportIndex() ([]IndexEntry, error) {
 	return append([]IndexEntry(nil), s.entries...), nil
 }
 
+type stagedLeaseStore struct {
+	manifest       IndexManifest
+	loadCalls      atomic.Int32
+	leaseAttempts  atomic.Int32
+	putCalls       atomic.Int32
+	savedManifests atomic.Int32
+}
+
+func (s *stagedLeaseStore) Put(DictionaryInfo, []IndexEntry) error {
+	s.putCalls.Add(1)
+	return nil
+}
+func (s *stagedLeaseStore) GetExact(string, string) (IndexEntry, error) {
+	return IndexEntry{}, ErrIndexMiss
+}
+func (s *stagedLeaseStore) PrefixSearch(string, string, int) ([]IndexEntry, error) {
+	return nil, ErrIndexMiss
+}
+func (s *stagedLeaseStore) LoadManifest(string) (IndexManifest, error) {
+	if s.loadCalls.Add(1) == 1 {
+		return IndexManifest{}, ErrIndexMiss
+	}
+	return s.manifest, nil
+}
+func (s *stagedLeaseStore) SaveManifest(IndexManifest) error {
+	s.savedManifests.Add(1)
+	return nil
+}
+func (s *stagedLeaseStore) DeleteDictionary(string) error { return nil }
+func (s *stagedLeaseStore) AcquireIndexBuildLease(string, time.Duration) (func() error, bool, error) {
+	s.leaseAttempts.Add(1)
+	return nil, false, nil
+}
+
 func TestResolveIndexSyncConfigDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -140,6 +174,38 @@ func TestEnsureDictionaryIndex_SerializesConcurrentRebuildsForSameSource(t *test
 	}
 	assert.Equal(t, 1, rebuilt)
 	assert.Equal(t, callers-1, reused)
+}
+
+func TestEnsureDictionaryIndex_ReusesManifestCreatedByExternalLeaseHolder(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dictPath := filepath.Join(tmpDir, "demo.mdx")
+	require.NoError(t, os.WriteFile(dictPath, []byte("demo"), 0o644))
+
+	cfg := ResolveIndexSyncConfig(
+		WithClock(func() time.Time { return time.Unix(1700000150, 0).UTC() }),
+		WithRebuildLeaseTTL(100*time.Millisecond),
+		WithRebuildLeasePollPeriod(time.Millisecond),
+	)
+	fingerprint, err := cfg.Fingerprinter.Fingerprint(dictPath)
+	require.NoError(t, err)
+	store := &stagedLeaseStore{
+		manifest: buildManifest(cfg, "demo", dictPath, fingerprint, nil),
+	}
+
+	opened := false
+	result, err := ensureDictionaryIndexWithDeps(dictPath, store, cfg, func(string) (externalIndexDictionary, error) {
+		opened = true
+		return nil, errors.New("should not open")
+	})
+	require.NoError(t, err)
+	assert.False(t, opened)
+	assert.True(t, result.Reused)
+	assert.False(t, result.Rebuilt)
+	assert.Equal(t, int32(0), store.putCalls.Load())
+	assert.Equal(t, int32(0), store.savedManifests.Load())
+	assert.GreaterOrEqual(t, store.leaseAttempts.Load(), int32(1))
 }
 
 func TestEnsureDictionaryIndex_RebuildsWhenFingerprintChanges(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +27,14 @@ func newFakeRedisBackend() *fakeRedisBackend {
 func (f *fakeRedisBackend) Set(_ context.Context, key, value string) error {
 	f.kv[key] = value
 	return nil
+}
+
+func (f *fakeRedisBackend) SetNX(_ context.Context, key, value string, _ time.Duration) (bool, error) {
+	if _, ok := f.kv[key]; ok {
+		return false, nil
+	}
+	f.kv[key] = value
+	return true, nil
 }
 
 func (f *fakeRedisBackend) Get(_ context.Context, key string) (string, error) {
@@ -66,6 +75,14 @@ func (f *fakeRedisBackend) Del(_ context.Context, keys ...string) error {
 		delete(f.saddCalls, key)
 	}
 	return nil
+}
+
+func (f *fakeRedisBackend) CompareAndDelete(_ context.Context, key, value string) (bool, error) {
+	if f.kv[key] != value {
+		return false, nil
+	}
+	delete(f.kv, key)
+	return true, nil
 }
 
 func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
@@ -171,4 +188,30 @@ func TestRedisIndexStore_ManifestAndDeleteDictionary(t *testing.T) {
 	_, err = store.GetExact("demo", "ability")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrIndexMiss))
+}
+
+func TestRedisIndexStore_AcquireIndexBuildLease(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil,
+		WithRedisIndexContext(context.Background()),
+		WithRedisKeyPrefix("lease:index"),
+	)
+	store.backend = backend
+
+	release, acquired, err := store.AcquireIndexBuildLease("demo", time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.NotNil(t, release)
+
+	_, acquired, err = store.AcquireIndexBuildLease("demo", time.Minute)
+	require.NoError(t, err)
+	assert.False(t, acquired)
+
+	require.NoError(t, release())
+	secondRelease, acquired, err := store.AcquireIndexBuildLease("demo", time.Minute)
+	require.NoError(t, err)
+	assert.True(t, acquired)
+	require.NoError(t, secondRelease())
 }

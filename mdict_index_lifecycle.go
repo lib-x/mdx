@@ -66,14 +66,21 @@ type ManagedIndexStore interface {
 	DeleteDictionary(dictionaryName string) error
 }
 
+// IndexBuildLeaseStore optionally coordinates index rebuild ownership across processes.
+type IndexBuildLeaseStore interface {
+	AcquireIndexBuildLease(dictionaryName string, ttl time.Duration) (release func() error, acquired bool, err error)
+}
+
 // IndexSyncConfig controls external-index lifecycle behavior.
 type IndexSyncConfig struct {
-	ReuseIfUnchanged bool
-	MissingSourceTTL time.Duration
-	ForceRebuild     bool
-	Fingerprinter    Fingerprinter
-	Now              func() time.Time
-	SchemaVersion    string
+	ReuseIfUnchanged       bool
+	MissingSourceTTL       time.Duration
+	ForceRebuild           bool
+	Fingerprinter          Fingerprinter
+	Now                    func() time.Time
+	SchemaVersion          string
+	RebuildLeaseTTL        time.Duration
+	RebuildLeasePollPeriod time.Duration
 }
 
 // IndexSyncOption customizes IndexSyncConfig.
@@ -90,12 +97,14 @@ type EnsureIndexResult struct {
 // DefaultIndexSyncConfig returns the default lifecycle configuration.
 func DefaultIndexSyncConfig() IndexSyncConfig {
 	return IndexSyncConfig{
-		ReuseIfUnchanged: true,
-		MissingSourceTTL: 0,
-		ForceRebuild:     false,
-		Fingerprinter:    NewFileStatFingerprinter(),
-		Now:              time.Now,
-		SchemaVersion:    defaultIndexSchemaVersion,
+		ReuseIfUnchanged:       true,
+		MissingSourceTTL:       0,
+		ForceRebuild:           false,
+		Fingerprinter:          NewFileStatFingerprinter(),
+		Now:                    time.Now,
+		SchemaVersion:          defaultIndexSchemaVersion,
+		RebuildLeaseTTL:        5 * time.Minute,
+		RebuildLeasePollPeriod: 250 * time.Millisecond,
 	}
 }
 
@@ -115,6 +124,9 @@ func ResolveIndexSyncConfig(opts ...IndexSyncOption) IndexSyncConfig {
 	}
 	if cfg.Fingerprinter == nil {
 		cfg.Fingerprinter = NewFileStatFingerprinter()
+	}
+	if cfg.RebuildLeasePollPeriod <= 0 {
+		cfg.RebuildLeasePollPeriod = 250 * time.Millisecond
 	}
 	return cfg
 }
@@ -161,6 +173,22 @@ func WithClock(now func() time.Time) IndexSyncOption {
 	return func(cfg *IndexSyncConfig) {
 		if now != nil {
 			cfg.Now = now
+		}
+	}
+}
+
+// WithRebuildLeaseTTL controls cross-process rebuild lease duration for stores that support it.
+func WithRebuildLeaseTTL(ttl time.Duration) IndexSyncOption {
+	return func(cfg *IndexSyncConfig) {
+		cfg.RebuildLeaseTTL = ttl
+	}
+}
+
+// WithRebuildLeasePollPeriod controls how often waiters re-check manifests while another process rebuilds.
+func WithRebuildLeasePollPeriod(period time.Duration) IndexSyncOption {
+	return func(cfg *IndexSyncConfig) {
+		if period > 0 {
+			cfg.RebuildLeasePollPeriod = period
 		}
 	}
 }
@@ -245,6 +273,21 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		}, nil
 	}
 
+	releaseLease, waitResult, err := acquireIndexBuildLease(dictName, dictPath, fingerprint, store, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if waitResult != nil {
+		return waitResult, nil
+	}
+	if releaseLease != nil {
+		defer func() {
+			if err := releaseLease(); err != nil {
+				log.Warningf("release index build lease for %s: %v", dictName, err)
+			}
+		}()
+	}
+
 	dict, err := open(dictPath)
 	if err != nil {
 		return nil, err
@@ -270,6 +313,41 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		Rebuilt:        true,
 		Manifest:       manifest,
 	}, nil
+}
+
+func acquireIndexBuildLease(dictName, dictPath, fingerprint string, store ManagedIndexStore, cfg IndexSyncConfig) (func() error, *EnsureIndexResult, error) {
+	leaseStore, ok := store.(IndexBuildLeaseStore)
+	if !ok || cfg.RebuildLeaseTTL <= 0 {
+		return nil, nil, nil
+	}
+
+	deadline := time.Now().Add(cfg.RebuildLeaseTTL)
+	for {
+		release, acquired, err := leaseStore.AcquireIndexBuildLease(dictName, cfg.RebuildLeaseTTL)
+		if err != nil {
+			return nil, nil, err
+		}
+		if acquired {
+			return release, nil, nil
+		}
+
+		manifest, manifestErr := store.LoadManifest(dictName)
+		if manifestErr != nil && !errors.Is(manifestErr, ErrIndexMiss) {
+			return nil, nil, manifestErr
+		}
+		if manifestErr == nil && shouldReuseManifest(manifest, dictPath, fingerprint, cfg) {
+			return nil, &EnsureIndexResult{
+				DictionaryName: dictName,
+				Reused:         true,
+				Manifest:       manifest,
+			}, nil
+		}
+
+		if time.Now().After(deadline) {
+			return nil, nil, fmt.Errorf("timed out waiting for index rebuild lease for %q", dictName)
+		}
+		time.Sleep(cfg.RebuildLeasePollPeriod)
+	}
 }
 
 func lockIndexSync(dictPath string) func() {

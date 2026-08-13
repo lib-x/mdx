@@ -172,6 +172,24 @@ func (f *fakeRedisBackend) ZCard(_ context.Context, key string) (int64, error) {
 }
 
 func (f *fakeRedisBackend) CommitIndex(_ context.Context, exactKey, comparableKey, lexKey, readyKey, stagingExactKey, stagingComparableKey, stagingLexKey, readyValue string) error {
+	parts := strings.Split(readyValue, ":")
+	if len(parts) != 3 || parts[0] != "v3" {
+		return errors.New("invalid index ready marker")
+	}
+	expectedExact, err := strconv.Atoi(parts[1])
+	if err != nil || expectedExact < 0 {
+		return errors.New("invalid exact index count")
+	}
+	expectedComparable, err := strconv.Atoi(parts[2])
+	if err != nil || expectedComparable < 0 {
+		return errors.New("invalid comparable index count")
+	}
+	if len(f.hashes[stagingExactKey]) != expectedExact ||
+		len(f.hashes[stagingComparableKey]) != expectedComparable ||
+		len(f.zsets[stagingLexKey]) != expectedExact {
+		return errors.New("staging index is incomplete")
+	}
+
 	delete(f.hashes, exactKey)
 	delete(f.hashes, comparableKey)
 	delete(f.zsets, lexKey)
@@ -315,6 +333,32 @@ func TestRedisIndexStorePut_DuplicateComparableLookupKeepsFirstEntry(t *testing.
 	assert.Equal(t, int64(1), entry.RecordStartOffset)
 }
 
+func TestRedisIndexStorePut_ResourceComparableLookupUsesRawKeywordAndExactStorageKey(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("resource-comparable:index"))
+	store.backend = backend
+	first := IndexEntry{
+		Keyword:           "Audio-Clip.SPX",
+		NormalizedKeyword: `\first-resource.bin`,
+		RecordStartOffset: 1,
+		IsResource:        true,
+	}
+	second := IndexEntry{
+		Keyword:           "audio clip spx",
+		NormalizedKeyword: `\second-resource.bin`,
+		RecordStartOffset: 2,
+		IsResource:        true,
+	}
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{first, second}))
+
+	entry, err := store.GetComparable("demo", "AUDIO_CLIP-SPX")
+	require.NoError(t, err)
+	assert.Equal(t, first, entry)
+	assert.Equal(t, `\first-resource.bin`, backend.hashes[store.dictComparableHashKey("demo")]["audioclipspx"])
+}
+
 func TestRedisIndexStorePut_DuplicateComparableLookupKeepsFirstEntryAcrossBatches(t *testing.T) {
 	t.Parallel()
 
@@ -358,6 +402,43 @@ func TestRedisIndexStorePut_FailedRebuildKeepsPreviousIndex(t *testing.T) {
 	assert.ErrorIs(t, err, ErrIndexMiss)
 	_, err = store.GetComparable("demo", "A-BLE")
 	assert.ErrorIs(t, err, ErrIndexMiss)
+}
+
+func TestFakeRedisBackendCommitIndexRejectsIncompleteStaging(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("fake-commit:index"))
+	store.backend = backend
+	exactKey := store.dictExactHashKey("demo")
+	comparableKey := store.dictComparableHashKey("demo")
+	lexKey := store.dictLexKey("demo")
+	readyKey := store.dictReadyKey("demo")
+	stagingExactKey := exactKey + ":staging:test"
+	stagingComparableKey := comparableKey + ":staging:test"
+	stagingLexKey := lexKey + ":staging:test"
+	backend.hashes[exactKey] = map[string]string{"old": `{"keyword":"old"}`}
+	backend.hashes[comparableKey] = map[string]string{"old": "old"}
+	backend.zsets[lexKey] = map[string]struct{}{redisLexMember("old"): {}}
+	backend.kv[readyKey] = "v3:1:1"
+	backend.hashes[stagingExactKey] = map[string]string{"new": `{"keyword":"new"}`}
+	backend.zsets[stagingLexKey] = map[string]struct{}{redisLexMember("new"): {}}
+
+	err := backend.CommitIndex(t.Context(),
+		exactKey,
+		comparableKey,
+		lexKey,
+		readyKey,
+		stagingExactKey,
+		stagingComparableKey,
+		stagingLexKey,
+		"v3:1:1",
+	)
+	require.Error(t, err)
+	assert.Equal(t, `{"keyword":"old"}`, backend.hashes[exactKey]["old"])
+	assert.Equal(t, "old", backend.hashes[comparableKey]["old"])
+	assert.Contains(t, backend.zsets[lexKey], redisLexMember("old"))
+	assert.Equal(t, "v3:1:1", backend.kv[readyKey])
 }
 
 func TestRedisIndexStore_ManifestAndDeleteDictionary(t *testing.T) {

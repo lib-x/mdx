@@ -74,7 +74,7 @@ func (s *MemoryIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error 
 		if _, exists := exact[key]; !exists {
 			exact[key] = entry
 		}
-		comparableKey := normalizeComparableKey(key)
+		comparableKey := normalizeComparableKey(entry.Keyword)
 		if comparableKey != "" {
 			if _, exists := comparable[comparableKey]; !exists {
 				comparable[comparableKey] = entry

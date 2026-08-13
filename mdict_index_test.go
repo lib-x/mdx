@@ -203,6 +203,27 @@ func TestMemoryIndexStoreComparableLookup(t *testing.T) {
 	assert.ErrorIs(t, err, ErrIndexMiss)
 }
 
+func TestMemoryIndexStoreResourceComparableLookupUsesRawKeyword(t *testing.T) {
+	store := NewMemoryIndexStore()
+	first := IndexEntry{
+		Keyword:           "Audio-Clip.SPX",
+		NormalizedKeyword: `\first-resource.bin`,
+		RecordStartOffset: 1,
+		IsResource:        true,
+	}
+	second := IndexEntry{
+		Keyword:           "audio clip spx",
+		NormalizedKeyword: `\second-resource.bin`,
+		RecordStartOffset: 2,
+		IsResource:        true,
+	}
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{first, second}))
+
+	entry, err := store.GetComparable("demo", "AUDIO_CLIP-SPX")
+	require.NoError(t, err)
+	assert.Equal(t, first, entry)
+}
+
 func TestDictionaryInfoAndExportIndexIntegration(t *testing.T) {
 	manifest := loadFixtureManifest(t)
 

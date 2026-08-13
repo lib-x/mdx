@@ -452,7 +452,7 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 				return err
 			}
 		}
-		comparableKey := normalizeComparableKey(key)
+		comparableKey := normalizeComparableKey(entry.Keyword)
 		if comparableKey != "" {
 			if _, exists := seenComparableKeys[comparableKey]; !exists {
 				seenComparableKeys[comparableKey] = struct{}{}

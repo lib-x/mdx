@@ -83,6 +83,7 @@ type IndexSyncConfig struct {
 	ReuseIfUnchanged       bool
 	MissingSourceTTL       time.Duration
 	ForceRebuild           bool
+	IndexDictionaryName    string
 	Fingerprinter          Fingerprinter
 	Now                    func() time.Time
 	SchemaVersion          string
@@ -156,6 +157,15 @@ func WithMissingSourceTTL(ttl time.Duration) IndexSyncOption {
 func WithForceRebuild() IndexSyncOption {
 	return func(cfg *IndexSyncConfig) {
 		cfg.ForceRebuild = true
+	}
+}
+
+// WithIndexDictionaryName overrides the external-store namespace used for the
+// dictionary index, manifest, health checks, and rebuild lease. By default the
+// source file's base name is used for backward compatibility.
+func WithIndexDictionaryName(name string) IndexSyncOption {
+	return func(cfg *IndexSyncConfig) {
+		cfg.IndexDictionaryName = strings.TrimSpace(name)
 	}
 }
 
@@ -244,7 +254,10 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 	unlock := lockIndexSync(dictPath)
 	defer unlock()
 
-	dictName := dictionaryNameFromPath(dictPath)
+	dictName := cfg.IndexDictionaryName
+	if dictName == "" {
+		dictName = dictionaryNameFromPath(dictPath)
+	}
 	manifest, manifestErr := store.LoadManifest(dictName)
 	if manifestErr != nil && !errors.Is(manifestErr, ErrIndexMiss) {
 		return nil, manifestErr
@@ -313,11 +326,12 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		return nil, err
 	}
 	infoToStore := dict.DictionaryInfo()
+	infoToStore.Name = dictName
 	if err := store.Put(infoToStore, entries); err != nil {
 		return nil, err
 	}
 
-	manifest = buildManifest(cfg, dict.Name(), dictPath, fingerprint, nil)
+	manifest = buildManifest(cfg, dictName, dictPath, fingerprint, nil)
 	if err := store.SaveManifest(manifest); err != nil {
 		return nil, err
 	}

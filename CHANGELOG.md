@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Added `WithIndexDictionaryName` so applications can give each derived index a stable, collision-free external-store namespace instead of relying on the source file's base name.
 - Reworked the Redis-compatible prefix index around one lexicographically sorted set and one entry hash per dictionary. Prefix queries now apply range and limit inside Redis or Valkey, then fetch matching entries with one `HMGET`, avoiding full prefix-set transfers and N+1 lookups.
 - Batched Redis-compatible index writes with bounded pipelines, removed the previous per-prefix-set write amplification, and atomically switches fully built staging indexes into service so failed rebuilds keep the previous index readable.
 - Added index health checks and completion markers so lifecycle reuse detects externally deleted or partially evicted derived index data while still recognizing valid empty dictionaries.

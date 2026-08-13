@@ -2,6 +2,7 @@ package mdx
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -39,6 +40,16 @@ type stagedLeaseStore struct {
 	savedManifests atomic.Int32
 	healthy        bool
 	acquireAfter   int32
+}
+
+type namespaceRecordingStore struct {
+	*MemoryIndexStore
+	leaseNames []string
+}
+
+func (s *namespaceRecordingStore) AcquireIndexBuildLease(dictionaryName string, _ time.Duration) (func() error, bool, error) {
+	s.leaseNames = append(s.leaseNames, dictionaryName)
+	return func() error { return nil }, true, nil
 }
 
 func (s *stagedLeaseStore) Put(DictionaryInfo, []IndexEntry) error {
@@ -84,6 +95,50 @@ func TestResolveIndexSyncConfigDefaults(t *testing.T) {
 	assert.NotNil(t, cfg.Fingerprinter)
 	assert.NotNil(t, cfg.Now)
 	assert.Equal(t, defaultIndexSchemaVersion, cfg.SchemaVersion)
+	assert.Empty(t, cfg.IndexDictionaryName)
+}
+
+func TestEnsureDictionaryIndex_UsesExplicitStoreNamespace(t *testing.T) {
+	t.Parallel()
+
+	store := &namespaceRecordingStore{MemoryIndexStore: NewMemoryIndexStore()}
+	paths := []string{
+		filepath.Join(t.TempDir(), "shared.mdx"),
+		filepath.Join(t.TempDir(), "shared.mdx"),
+	}
+	for _, path := range paths {
+		require.NoError(t, os.WriteFile(path, []byte(path), 0o644))
+	}
+
+	for index, path := range paths {
+		namespace := fmt.Sprintf("owl-dictionary-%d", index+1)
+		keyword := fmt.Sprintf("entry-%d", index+1)
+		cfg := ResolveIndexSyncConfig(WithIndexDictionaryName(namespace))
+		result, err := ensureDictionaryIndexWithDeps(path, store, cfg, func(string) (externalIndexDictionary, error) {
+			return &stubExternalIndexDict{
+				name:    "shared",
+				info:    DictionaryInfo{Name: "shared"},
+				entries: []IndexEntry{{Keyword: keyword}},
+			}, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, namespace, result.DictionaryName)
+		assert.Equal(t, namespace, result.Manifest.DictionaryName)
+		manifest, err := store.LoadManifest(namespace)
+		require.NoError(t, err)
+		assert.Equal(t, path, manifest.SourcePath)
+		entry, err := store.GetExact(namespace, keyword)
+		require.NoError(t, err)
+		assert.Equal(t, keyword, entry.Keyword)
+	}
+
+	assert.Equal(t, []string{"owl-dictionary-1", "owl-dictionary-2"}, store.leaseNames)
+	_, err := store.GetExact("owl-dictionary-1", "entry-2")
+	assert.ErrorIs(t, err, ErrIndexMiss)
+	_, err = store.GetExact("owl-dictionary-2", "entry-1")
+	assert.ErrorIs(t, err, ErrIndexMiss)
+	_, err = store.LoadManifest("shared")
+	assert.ErrorIs(t, err, ErrIndexMiss)
 }
 
 func TestEnsureDictionaryIndex_ReusesMatchingManifest(t *testing.T) {

@@ -142,12 +142,17 @@ result, err := mdx.EnsureDictionaryIndex(
     store,
     mdx.WithReuseIfUnchanged(true),
     mdx.WithMissingSourceTTL(24*time.Hour),
+	mdx.WithIndexDictionaryName("dictionary-42"),
 )
 if err != nil {
     log.Fatal(err)
 }
 fmt.Println(result.Reused, result.Rebuilt)
 ```
+
+如果不同源路径可能使用同一个文件名，请设置 `WithIndexDictionaryName`。
+这个值会同时作为索引条目、生命周期 manifest、健康检查和重建租约的共享
+namespace，因此必须在外部存储内保持稳定且唯一。
 
 `RedisIndexStore` 为保持 API 兼容沿用现有名称，可通过 Redis 协议直接连接 Valkey。前缀查询使用每词典一个字典序 sorted set 和一个 entry hash，再用批量 `HMGET` 获取结果，因此范围过滤和 limit 都在服务端完成。
 

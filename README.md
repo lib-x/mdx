@@ -141,12 +141,18 @@ result, err := mdx.EnsureDictionaryIndex(
     store,
     mdx.WithReuseIfUnchanged(true),
     mdx.WithMissingSourceTTL(24*time.Hour),
+	mdx.WithIndexDictionaryName("dictionary-42"),
 )
 if err != nil {
     log.Fatal(err)
 }
 fmt.Println(result.Reused, result.Rebuilt)
 ```
+
+Use `WithIndexDictionaryName` when different source paths can have the same
+file name. The value becomes the shared namespace for index entries, lifecycle
+manifests, health checks, and rebuild leases, so it must be stable and unique
+within the external store.
 
 `RedisIndexStore` keeps its compatibility-oriented API name and works with Valkey through the Redis protocol. Its prefix path uses a dictionary-level lexicographic sorted set plus a batched `HMGET`, so the server applies the prefix range and result limit before transferring keys.
 

@@ -166,6 +166,12 @@ func TestRewriteEntryHTMLMatchesLegacyComposition(t *testing.T) {
 			assetBase: "",
 			entryBase: "/lookup/%s",
 		},
+		{
+			name:      "repeated malformed entry prefixes",
+			content:   `<a href="entry://entry://entry://apple">apple</a>`,
+			assetBase: "/assets",
+			entryBase: "/entry?word=",
+		},
 	}
 
 	for _, tt := range tests {

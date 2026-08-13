@@ -188,6 +188,21 @@ func TestMemoryIndexStore(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrIndexMiss))
 }
 
+func TestMemoryIndexStoreComparableLookup(t *testing.T) {
+	store := NewMemoryIndexStore()
+	first := IndexEntry{Keyword: "cooperate", RecordStartOffset: 1}
+	second := IndexEntry{Keyword: "co-operate", RecordStartOffset: 2}
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{first, second}))
+
+	entry, err := store.GetComparable("demo", " Co-Operate! ")
+	require.NoError(t, err)
+	assert.Equal(t, first, entry)
+
+	require.NoError(t, store.DeleteDictionary("demo"))
+	_, err = store.GetComparable("demo", "cooperate")
+	assert.ErrorIs(t, err, ErrIndexMiss)
+}
+
 func TestDictionaryInfoAndExportIndexIntegration(t *testing.T) {
 	manifest := loadFixtureManifest(t)
 

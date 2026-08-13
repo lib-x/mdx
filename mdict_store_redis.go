@@ -37,7 +37,7 @@ type redisIndexBackend interface {
 	ZAddMany(ctx context.Context, key string, members []string) error
 	ZRangeByLex(ctx context.Context, key, minValue, maxValue string, limit int64) ([]string, error)
 	ZCard(ctx context.Context, key string) (int64, error)
-	CommitIndex(ctx context.Context, exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey, readyValue string) error
+	CommitIndex(ctx context.Context, exactKey, comparableKey, lexKey, readyKey, stagingExactKey, stagingComparableKey, stagingLexKey, readyValue string) error
 	Del(ctx context.Context, keys ...string) error
 	CompareAndDelete(ctx context.Context, key, value string) (bool, error)
 }
@@ -214,25 +214,30 @@ func (r *redisIndexBackendAdapter) ZCard(ctx context.Context, key string) (int64
 	return r.client.ZCard(ctx, key).Result()
 }
 
-func (r *redisIndexBackendAdapter) CommitIndex(ctx context.Context, exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey, readyValue string) error {
+func (r *redisIndexBackendAdapter) CommitIndex(ctx context.Context, exactKey, comparableKey, lexKey, readyKey, stagingExactKey, stagingComparableKey, stagingLexKey, readyValue string) error {
 	const script = `
-local expected = tonumber(ARGV[2])
-if redis.call("hlen", KEYS[4]) ~= expected or redis.call("zcard", KEYS[5]) ~= expected then
+local expected_exact = tonumber(ARGV[2])
+local expected_comparable = tonumber(ARGV[3])
+if redis.call("hlen", KEYS[5]) ~= expected_exact or
+   redis.call("hlen", KEYS[6]) ~= expected_comparable or
+   redis.call("zcard", KEYS[7]) ~= expected_exact then
   return redis.error_reply("staging index is incomplete")
 end
-redis.call("del", KEYS[1], KEYS[2])
-if redis.call("exists", KEYS[4]) == 1 then redis.call("rename", KEYS[4], KEYS[1]) end
-if redis.call("exists", KEYS[5]) == 1 then redis.call("rename", KEYS[5], KEYS[2]) end
-redis.call("set", KEYS[3], ARGV[1])
+redis.call("del", KEYS[1], KEYS[2], KEYS[3])
+if redis.call("exists", KEYS[5]) == 1 then redis.call("rename", KEYS[5], KEYS[1]) end
+if redis.call("exists", KEYS[6]) == 1 then redis.call("rename", KEYS[6], KEYS[2]) end
+if redis.call("exists", KEYS[7]) == 1 then redis.call("rename", KEYS[7], KEYS[3]) end
+redis.call("set", KEYS[4], ARGV[1])
 return 1`
-	_, countText, ok := strings.Cut(readyValue, ":")
-	if !ok {
+	parts := strings.Split(readyValue, ":")
+	if len(parts) != 3 || parts[0] != "v3" {
 		return errors.New("invalid index ready marker")
 	}
 	return r.client.Eval(ctx, script,
-		[]string{exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey},
+		[]string{exactKey, comparableKey, lexKey, readyKey, stagingExactKey, stagingComparableKey, stagingLexKey},
 		readyValue,
-		countText,
+		parts[1],
+		parts[2],
 	).Err()
 }
 
@@ -344,6 +349,10 @@ func (s *RedisIndexStore) dictExactHashKey(dictionaryName string) string {
 	return s.prefix + ":" + dictionaryName + ":entries"
 }
 
+func (s *RedisIndexStore) dictComparableHashKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":comparable"
+}
+
 func (s *RedisIndexStore) dictPrefixSetKey(dictionaryName, prefix string) string {
 	return s.prefix + ":" + dictionaryName + ":prefix:" + prefix
 }
@@ -374,6 +383,7 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 	prefixRegistry := s.dictPrefixRegistryKey(info.Name)
 	lexKey := s.dictLexKey(info.Name)
 	exactHashKey := s.dictExactHashKey(info.Name)
+	comparableHashKey := s.dictComparableHashKey(info.Name)
 	oldKeys, err := s.backend.SMembers(s.ctx, keysSet)
 	if err != nil && !errors.Is(err, ErrIndexMiss) {
 		return err
@@ -395,22 +405,32 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 		return err
 	}
 	stagingExactKey := exactHashKey + ":staging:" + token
+	stagingComparableKey := comparableHashKey + ":staging:" + token
 	stagingLexKey := lexKey + ":staging:" + token
 	defer func() {
-		if err := s.backend.Del(s.ctx, stagingExactKey, stagingLexKey); err != nil {
+		if err := s.backend.Del(s.ctx, stagingExactKey, stagingComparableKey, stagingLexKey); err != nil {
 			log.Warningf("delete staging index for %s: %v", info.Name, err)
 		}
 	}()
 
 	registry := make([]string, 0, len(entries))
 	seenKeys := make(map[string]struct{}, len(entries))
+	seenComparableKeys := make(map[string]struct{}, len(entries))
 	lexMembers := make([]string, 0, len(entries))
 	exactValues := make(map[string]string, redisWriteBatchSize)
+	comparableValues := make(map[string]string, redisWriteBatchSize)
 	flushExactValues := func() error {
 		if err := s.backend.HSetMany(s.ctx, stagingExactKey, exactValues); err != nil {
 			return err
 		}
 		clear(exactValues)
+		return nil
+	}
+	flushComparableValues := func() error {
+		if err := s.backend.HSetMany(s.ctx, stagingComparableKey, comparableValues); err != nil {
+			return err
+		}
+		clear(comparableValues)
 		return nil
 	}
 	for _, entry := range entries {
@@ -432,6 +452,18 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 				return err
 			}
 		}
+		comparableKey := normalizeComparableKey(key)
+		if comparableKey != "" {
+			if _, exists := seenComparableKeys[comparableKey]; !exists {
+				seenComparableKeys[comparableKey] = struct{}{}
+				comparableValues[comparableKey] = key
+			}
+			if len(comparableValues) >= redisWriteBatchSize {
+				if err := flushComparableValues(); err != nil {
+					return err
+				}
+			}
+		}
 
 		seenKeys[key] = struct{}{}
 		registry = append(registry, key)
@@ -440,17 +472,26 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 	if err := flushExactValues(); err != nil {
 		return err
 	}
+	if err := flushComparableValues(); err != nil {
+		return err
+	}
+	comparableCount, err := s.backend.HLen(s.ctx, stagingComparableKey)
+	if err != nil {
+		return err
+	}
 
 	if err := s.backend.ZAddMany(s.ctx, stagingLexKey, lexMembers); err != nil {
 		return err
 	}
 	if err := s.backend.CommitIndex(s.ctx,
 		exactHashKey,
+		comparableHashKey,
 		lexKey,
 		s.dictReadyKey(info.Name),
 		stagingExactKey,
+		stagingComparableKey,
 		stagingLexKey,
-		"v2:"+strconv.Itoa(len(registry)),
+		"v3:"+strconv.Itoa(len(registry))+":"+strconv.FormatInt(comparableCount, 10),
 	); err != nil {
 		return err
 	}
@@ -458,6 +499,20 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 		log.Warningf("delete legacy index for %s: %v", info.Name, err)
 	}
 	return nil
+}
+
+// GetComparable returns the first entry whose keyword has the same normalized
+// comparable form as keyword.
+func (s *RedisIndexStore) GetComparable(dictionaryName, keyword string) (IndexEntry, error) {
+	comparableKey := normalizeComparableKey(keyword)
+	if comparableKey == "" {
+		return IndexEntry{}, ErrIndexMiss
+	}
+	exactKey, err := s.backend.HGet(s.ctx, s.dictComparableHashKey(dictionaryName), comparableKey)
+	if err != nil {
+		return IndexEntry{}, err
+	}
+	return s.GetExact(dictionaryName, exactKey)
 }
 
 // GetExact returns one exact entry from a Redis-compatible server.
@@ -632,26 +687,27 @@ func (s *RedisIndexStore) SaveManifest(manifest IndexManifest) error {
 	return s.backend.Set(s.ctx, s.dictManifestKey(manifest.DictionaryName), string(payload))
 }
 
-// HasDictionaryIndex verifies the completed index marker and key registry.
-// Indexes created before completion markers were introduced remain reusable.
+// HasDictionaryIndex verifies all current-generation derived views. Older
+// indexes remain readable but report unhealthy so lifecycle synchronization
+// rebuilds the missing comparable-key view.
 func (s *RedisIndexStore) HasDictionaryIndex(dictionaryName string) (bool, error) {
 	marker, markerErr := s.backend.Get(s.ctx, s.dictReadyKey(dictionaryName))
 	if markerErr != nil && !errors.Is(markerErr, ErrIndexMiss) {
 		return false, markerErr
 	}
 	if errors.Is(markerErr, ErrIndexMiss) {
-		count, err := s.backend.SCard(s.ctx, s.dictKeysSetKey(dictionaryName))
-		if err != nil {
-			return false, err
-		}
-		return count > 0, nil
-	}
-	countText, versioned := strings.CutPrefix(marker, "v2:")
-	if !versioned {
 		return false, nil
 	}
-	expected, err := strconv.ParseInt(countText, 10, 64)
+	parts := strings.Split(marker, ":")
+	if len(parts) != 3 || parts[0] != "v3" {
+		return false, nil
+	}
+	expected, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || expected < 0 {
+		return false, nil
+	}
+	expectedComparable, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || expectedComparable < 0 {
 		return false, nil
 	}
 	lexCount, err := s.backend.ZCard(s.ctx, s.dictLexKey(dictionaryName))
@@ -662,7 +718,11 @@ func (s *RedisIndexStore) HasDictionaryIndex(dictionaryName string) (bool, error
 	if err != nil {
 		return false, err
 	}
-	return exactCount == expected && lexCount == expected, nil
+	comparableCount, err := s.backend.HLen(s.ctx, s.dictComparableHashKey(dictionaryName))
+	if err != nil {
+		return false, err
+	}
+	return exactCount == expected && lexCount == expected && comparableCount == expectedComparable, nil
 }
 
 // DeleteDictionary removes one dictionary's entries and manifest.
@@ -678,8 +738,8 @@ func (s *RedisIndexStore) DeleteDictionary(dictionaryName string) error {
 		return err
 	}
 
-	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+6)
-	toDelete = append(toDelete, keysSet, prefixRegistry, s.dictLexKey(dictionaryName), s.dictExactHashKey(dictionaryName), s.dictManifestKey(dictionaryName), s.dictReadyKey(dictionaryName))
+	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+7)
+	toDelete = append(toDelete, keysSet, prefixRegistry, s.dictLexKey(dictionaryName), s.dictExactHashKey(dictionaryName), s.dictComparableHashKey(dictionaryName), s.dictManifestKey(dictionaryName), s.dictReadyKey(dictionaryName))
 	for _, keyword := range oldKeys {
 		toDelete = append(toDelete, s.dictExactKey(dictionaryName, keyword))
 	}

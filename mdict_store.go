@@ -14,6 +14,12 @@ type IndexStore interface {
 	PrefixSearch(dictionaryName, prefix string, limit int) ([]IndexEntry, error)
 }
 
+// ComparableIndexStore optionally extends IndexStore with the same
+// case-and-punctuation-insensitive lookup used by Mdict.Lookup.
+type ComparableIndexStore interface {
+	GetComparable(dictionaryName, keyword string) (IndexEntry, error)
+}
+
 // SearchHit represents a ranked search result from a fuzzy-capable store.
 type SearchHit struct {
 	Entry  IndexEntry `json:"entry"`
@@ -32,17 +38,19 @@ var ErrIndexMiss = errors.New("index entry not found")
 
 // MemoryIndexStore is a small in-memory reference implementation of ManagedIndexStore.
 type MemoryIndexStore struct {
-	entriesByDict   map[string][]IndexEntry
-	exactByDict     map[string]map[string]IndexEntry
-	manifestsByDict map[string]IndexManifest
+	entriesByDict    map[string][]IndexEntry
+	exactByDict      map[string]map[string]IndexEntry
+	comparableByDict map[string]map[string]IndexEntry
+	manifestsByDict  map[string]IndexManifest
 }
 
 // NewMemoryIndexStore creates a new in-memory store.
 func NewMemoryIndexStore() *MemoryIndexStore {
 	return &MemoryIndexStore{
-		entriesByDict:   make(map[string][]IndexEntry),
-		exactByDict:     make(map[string]map[string]IndexEntry),
-		manifestsByDict: make(map[string]IndexManifest),
+		entriesByDict:    make(map[string][]IndexEntry),
+		exactByDict:      make(map[string]map[string]IndexEntry),
+		comparableByDict: make(map[string]map[string]IndexEntry),
+		manifestsByDict:  make(map[string]IndexManifest),
 	}
 }
 
@@ -57,6 +65,7 @@ func (s *MemoryIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error 
 	s.entriesByDict[info.Name] = cloned
 
 	exact := make(map[string]IndexEntry, len(entries))
+	comparable := make(map[string]IndexEntry, len(entries))
 	for _, entry := range entries {
 		key := indexStoreLookupKey(entry)
 		if key == "" {
@@ -65,8 +74,15 @@ func (s *MemoryIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error 
 		if _, exists := exact[key]; !exists {
 			exact[key] = entry
 		}
+		comparableKey := normalizeComparableKey(key)
+		if comparableKey != "" {
+			if _, exists := comparable[comparableKey]; !exists {
+				comparable[comparableKey] = entry
+			}
+		}
 	}
 	s.exactByDict[info.Name] = exact
+	s.comparableByDict[info.Name] = comparable
 	return nil
 }
 
@@ -82,6 +98,19 @@ func (s *MemoryIndexStore) GetExact(dictionaryName, keyword string) (IndexEntry,
 		return entry, nil
 	}
 	return IndexEntry{}, ErrIndexMiss
+}
+
+// GetComparable retrieves a case-and-punctuation-insensitive match.
+func (s *MemoryIndexStore) GetComparable(dictionaryName, keyword string) (IndexEntry, error) {
+	comparable, ok := s.comparableByDict[dictionaryName]
+	if !ok {
+		return IndexEntry{}, ErrIndexMiss
+	}
+	entry, ok := comparable[normalizeComparableKey(keyword)]
+	if !ok {
+		return IndexEntry{}, ErrIndexMiss
+	}
+	return entry, nil
 }
 
 // PrefixSearch returns entries that start with the supplied prefix.
@@ -138,6 +167,7 @@ func (s *MemoryIndexStore) HasDictionaryIndex(dictionaryName string) (bool, erro
 func (s *MemoryIndexStore) DeleteDictionary(dictionaryName string) error {
 	delete(s.entriesByDict, dictionaryName)
 	delete(s.exactByDict, dictionaryName)
+	delete(s.comparableByDict, dictionaryName)
 	delete(s.manifestsByDict, dictionaryName)
 	return nil
 }

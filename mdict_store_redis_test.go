@@ -171,12 +171,17 @@ func (f *fakeRedisBackend) ZCard(_ context.Context, key string) (int64, error) {
 	return int64(len(f.zsets[key])), nil
 }
 
-func (f *fakeRedisBackend) CommitIndex(_ context.Context, exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey, readyValue string) error {
+func (f *fakeRedisBackend) CommitIndex(_ context.Context, exactKey, comparableKey, lexKey, readyKey, stagingExactKey, stagingComparableKey, stagingLexKey, readyValue string) error {
 	delete(f.hashes, exactKey)
+	delete(f.hashes, comparableKey)
 	delete(f.zsets, lexKey)
 	if staged, ok := f.hashes[stagingExactKey]; ok {
 		f.hashes[exactKey] = staged
 		delete(f.hashes, stagingExactKey)
+	}
+	if staged, ok := f.hashes[stagingComparableKey]; ok {
+		f.hashes[comparableKey] = staged
+		delete(f.hashes, stagingComparableKey)
 	}
 	if staged, ok := f.zsets[stagingLexKey]; ok {
 		f.zsets[lexKey] = staged
@@ -230,6 +235,10 @@ func TestRedisIndexStoreWithFakeBackend(t *testing.T) {
 	entry, err := store.GetExact("demo", "ability")
 	require.NoError(t, err)
 	assert.Equal(t, "ability", entry.Keyword)
+
+	comparable, err := store.GetComparable("demo", "A-BIL_ITY")
+	require.NoError(t, err)
+	assert.Equal(t, "ability", comparable.Keyword)
 
 	resource, err := store.GetExact("demo", `\accordion_concertina.jpg`)
 	require.NoError(t, err)
@@ -290,6 +299,44 @@ func TestRedisIndexStorePut_DuplicateLookupKeepsFirstEntry(t *testing.T) {
 	assert.Equal(t, int64(1), entry.RecordStartOffset)
 }
 
+func TestRedisIndexStorePut_DuplicateComparableLookupKeepsFirstEntry(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("comparable:index"))
+	store.backend = backend
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{
+		{Keyword: "cooperate", RecordStartOffset: 1},
+		{Keyword: "co-operate", RecordStartOffset: 2},
+	}))
+
+	entry, err := store.GetComparable("demo", "Co-Operate")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), entry.RecordStartOffset)
+}
+
+func TestRedisIndexStorePut_DuplicateComparableLookupKeepsFirstEntryAcrossBatches(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("comparable-batches:index"))
+	store.backend = backend
+	entries := make([]IndexEntry, redisWriteBatchSize+2)
+	entries[0] = IndexEntry{Keyword: "cooperate", RecordStartOffset: 1}
+	for index := 1; index <= redisWriteBatchSize; index++ {
+		entries[index] = IndexEntry{Keyword: fmt.Sprintf("entry-%04d", index), RecordStartOffset: int64(index + 1)}
+	}
+	entries[len(entries)-1] = IndexEntry{Keyword: "co-operate", RecordStartOffset: 9999}
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, entries))
+
+	entry, err := store.GetComparable("demo", "Co-Operate")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), entry.RecordStartOffset)
+	healthy, err := store.HasDictionaryIndex("demo")
+	require.NoError(t, err)
+	assert.True(t, healthy)
+}
+
 func TestRedisIndexStorePut_FailedRebuildKeepsPreviousIndex(t *testing.T) {
 	t.Parallel()
 
@@ -304,7 +351,12 @@ func TestRedisIndexStorePut_FailedRebuildKeepsPreviousIndex(t *testing.T) {
 	entry, err := store.GetExact("demo", "ability")
 	require.NoError(t, err)
 	assert.Equal(t, "ability", entry.Keyword)
+	comparable, err := store.GetComparable("demo", "A-BIL_ITY")
+	require.NoError(t, err)
+	assert.Equal(t, "ability", comparable.Keyword)
 	_, err = store.GetExact("demo", "able")
+	assert.ErrorIs(t, err, ErrIndexMiss)
+	_, err = store.GetComparable("demo", "A-BLE")
 	assert.ErrorIs(t, err, ErrIndexMiss)
 }
 
@@ -342,6 +394,9 @@ func TestRedisIndexStore_ManifestAndDeleteDictionary(t *testing.T) {
 	_, err = store.GetExact("demo", "ability")
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrIndexMiss))
+	_, err = store.GetComparable("demo", "ABILITY")
+	assert.ErrorIs(t, err, ErrIndexMiss)
+	assert.NotContains(t, backend.hashes, store.dictComparableHashKey("demo"))
 }
 
 func TestRedisIndexStore_EmptyDictionaryHasHealthyIndex(t *testing.T) {
@@ -352,6 +407,8 @@ func TestRedisIndexStore_EmptyDictionaryHasHealthyIndex(t *testing.T) {
 	store.backend = backend
 
 	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, nil))
+	_, err := store.GetComparable("demo", "missing")
+	assert.ErrorIs(t, err, ErrIndexMiss)
 	healthy, err := store.HasDictionaryIndex("demo")
 	require.NoError(t, err)
 	assert.True(t, healthy)
@@ -373,6 +430,37 @@ func TestRedisIndexStore_DetectsMissingIndexData(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, healthy)
 	_, err = store.PrefixSearch("demo", "ab", 10)
+	assert.ErrorIs(t, err, ErrIndexMiss)
+}
+
+func TestRedisIndexStore_DetectsMissingComparableIndexData(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("comparable-health:index"))
+	store.backend = backend
+	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{{Keyword: "cooperate"}}))
+
+	delete(backend.hashes[store.dictComparableHashKey("demo")], "cooperate")
+	healthy, err := store.HasDictionaryIndex("demo")
+	require.NoError(t, err)
+	assert.False(t, healthy)
+}
+
+func TestRedisIndexStore_V2IndexRequiresComparableUpgrade(t *testing.T) {
+	t.Parallel()
+
+	backend := newFakeRedisBackend()
+	store := NewRedisIndexStore(nil, WithRedisKeyPrefix("v2-upgrade:index"))
+	store.backend = backend
+	backend.hashes[store.dictExactHashKey("demo")] = map[string]string{"cooperate": `{"keyword":"cooperate"}`}
+	backend.zsets[store.dictLexKey("demo")] = map[string]struct{}{redisLexMember("cooperate"): {}}
+	backend.kv[store.dictReadyKey("demo")] = "v2:1"
+
+	healthy, err := store.HasDictionaryIndex("demo")
+	require.NoError(t, err)
+	assert.False(t, healthy)
+	_, err = store.GetComparable("demo", "Co-Operate")
 	assert.ErrorIs(t, err, ErrIndexMiss)
 }
 
@@ -410,7 +498,7 @@ func TestRedisIndexStore_LegacyIndexRemainsReadable(t *testing.T) {
 	assert.Equal(t, "ability", results[0].Keyword)
 	healthy, err := store.HasDictionaryIndex("demo")
 	require.NoError(t, err)
-	assert.True(t, healthy)
+	assert.False(t, healthy)
 }
 
 func TestRedisIndexStore_AcquireIndexBuildLease(t *testing.T) {
@@ -457,11 +545,15 @@ func TestRedisIndexStore_ValkeyIntegration(t *testing.T) {
 	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{
 		{Keyword: "Ability", RecordStartOffset: 1, RecordEndOffset: 2},
 		{Keyword: "able", RecordStartOffset: 3, RecordEndOffset: 4},
+		{Keyword: "cooperate", RecordStartOffset: 5, RecordEndOffset: 6},
 	}))
 	results, err := store.PrefixSearch("demo", "AB", 1)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "Ability", results[0].Keyword)
+	comparable, err := store.GetComparable("demo", "Co-Operate")
+	require.NoError(t, err)
+	assert.Equal(t, "cooperate", comparable.Keyword)
 	healthy, err := store.HasDictionaryIndex("demo")
 	require.NoError(t, err)
 	assert.True(t, healthy)
@@ -494,21 +586,27 @@ func TestRedisIndexStore_ValkeyRejectsIncompleteStagingIndex(t *testing.T) {
 	require.NoError(t, store.Put(DictionaryInfo{Name: "demo"}, []IndexEntry{{Keyword: "ability"}}))
 
 	stagingExact := store.dictExactHashKey("demo") + ":staging:broken"
+	stagingComparable := store.dictComparableHashKey("demo") + ":staging:broken"
 	stagingLex := store.dictLexKey("demo") + ":staging:broken"
 	require.NoError(t, client.HSet(ctx, stagingExact, "able", `{"keyword":"able"}`).Err())
-	defer func() { _ = client.Del(ctx, stagingExact, stagingLex).Err() }()
+	defer func() { _ = client.Del(ctx, stagingExact, stagingComparable, stagingLex).Err() }()
 	err := store.backend.CommitIndex(ctx,
 		store.dictExactHashKey("demo"),
+		store.dictComparableHashKey("demo"),
 		store.dictLexKey("demo"),
 		store.dictReadyKey("demo"),
 		stagingExact,
+		stagingComparable,
 		stagingLex,
-		"v2:1",
+		"v3:1:1",
 	)
 	require.Error(t, err)
 	entry, err := store.GetExact("demo", "ability")
 	require.NoError(t, err)
 	assert.Equal(t, "ability", entry.Keyword)
+	comparable, err := store.GetComparable("demo", "ABILITY")
+	require.NoError(t, err)
+	assert.Equal(t, "ability", comparable.Keyword)
 }
 
 func BenchmarkRedisIndexStorePrefixSearch(b *testing.B) {

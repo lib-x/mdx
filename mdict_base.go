@@ -216,14 +216,6 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 	}
 
 	parsedMeta, err := mdict.parseKeyBlockMeta(keyBlockMetaBuffer, fileSize)
-	if err != nil && mdict.meta.encryptType == EncryptKeyInfoEnc {
-		log.Warningf(
-			"Encrypted key block metadata parse failed for '%s', retrying without metadata decryption: %v",
-			mdict.filePath,
-			err,
-		)
-		parsedMeta, err = mdict.parseKeyBlockMetaWithoutDecrypt(keyBlockMetaBuffer, fileSize)
-	}
 	if err != nil {
 		return err
 	}
@@ -244,27 +236,30 @@ func (mdict *MdictBase) readKeyBlockMeta() error {
 }
 
 func (mdict *MdictBase) parseKeyBlockMeta(raw []byte, fileSize int64) (*mdictKeyBlockMeta, error) {
-	if mdict.meta.encryptType == EncryptKeyInfoEnc {
-		log.Debugf("Key block metadata is encrypted (type %d) for '%s', decrypting...", mdict.meta.encryptType, mdict.filePath)
-		decryptedInput := append([]byte(nil), raw...)
-		decrypted := mdxDecrypt(decryptedInput, int64(len(decryptedInput)))
-		if len(decrypted) != len(raw) {
-			return nil, fmt.Errorf(
-				"key block metadata decryption error for '%s': output size mismatch (expected %d, got %d)",
-				mdict.filePath,
-				len(raw),
-				len(decrypted),
-			)
-		}
-		log.Debugf("Key block metadata decryption complete for: %s", mdict.filePath)
-		return mdict.parsePlainKeyBlockMeta(decrypted, fileSize)
+	// Encrypted=2 protects the following key-block info, not these size fields.
+	// Parse the metadata as written before retaining the legacy decrypt path for
+	// dictionaries that previously depended on it.
+	parsedMeta, err := mdict.parsePlainKeyBlockMeta(raw, fileSize)
+	if err == nil || mdict.meta.encryptType != EncryptKeyInfoEnc {
+		return parsedMeta, err
 	}
 
-	return mdict.parsePlainKeyBlockMeta(raw, fileSize)
-}
-
-func (mdict *MdictBase) parseKeyBlockMetaWithoutDecrypt(raw []byte, fileSize int64) (*mdictKeyBlockMeta, error) {
-	return mdict.parsePlainKeyBlockMeta(raw, fileSize)
+	log.Warningf(
+		"Plain key block metadata parse failed for '%s', retrying legacy metadata decryption: %v",
+		mdict.filePath,
+		err,
+	)
+	decryptedInput := append([]byte(nil), raw...)
+	decrypted := mdxDecrypt(decryptedInput, int64(len(decryptedInput)))
+	if len(decrypted) != len(raw) {
+		return nil, fmt.Errorf(
+			"key block metadata decryption error for '%s': output size mismatch (expected %d, got %d)",
+			mdict.filePath,
+			len(raw),
+			len(decrypted),
+		)
+	}
+	return mdict.parsePlainKeyBlockMeta(decrypted, fileSize)
 }
 
 func (mdict *MdictBase) parsePlainKeyBlockMeta(buf []byte, fileSize int64) (*mdictKeyBlockMeta, error) {

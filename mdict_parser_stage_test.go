@@ -2,6 +2,7 @@ package mdx
 
 import (
 	"encoding/binary"
+	"hash/adler32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -104,7 +105,125 @@ func TestReadFileFromPos_RejectsRangeBeyondFileSize(t *testing.T) {
 	assert.Contains(t, err.Error(), "exceeds file size")
 }
 
-func TestMdictBaseReadKeyBlockMeta_FallsBackWhenEncryptedMetadataLooksInvalid(t *testing.T) {
+func TestMdictBaseParseKeyBlockMeta_UsesPlainMetadataWhenKeyInfoIsEncrypted(t *testing.T) {
+	t.Parallel()
+
+	rawMeta := make([]byte, 40)
+	binary.BigEndian.PutUint64(rawMeta[0:8], 3)
+	binary.BigEndian.PutUint64(rawMeta[8:16], 9)
+	binary.BigEndian.PutUint64(rawMeta[16:24], 128)
+	binary.BigEndian.PutUint64(rawMeta[24:32], 64)
+	binary.BigEndian.PutUint64(rawMeta[32:40], 256)
+
+	base := &MdictBase{
+		filePath: "encrypted-key-info.mdx",
+		meta: &mdictMeta{
+			version:                 2,
+			numberWidth:             8,
+			encryptType:             EncryptKeyInfoEnc,
+			keyBlockMetaStartOffset: 18,
+		},
+	}
+
+	meta, err := base.parseKeyBlockMeta(rawMeta, 422)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), meta.keyBlockNum)
+	assert.Equal(t, int64(9), meta.entriesNum)
+	assert.Equal(t, int64(128), meta.keyBlockInfoDecompressSize)
+	assert.Equal(t, int64(64), meta.keyBlockInfoCompressedSize)
+	assert.Equal(t, int64(256), meta.keyBlockDataTotalSize)
+}
+
+func BenchmarkMdictBaseParseKeyBlockMeta_EncryptedKeyInfoPlainMetadata(b *testing.B) {
+	rawMeta := make([]byte, 40)
+	binary.BigEndian.PutUint64(rawMeta[0:8], 3)
+	binary.BigEndian.PutUint64(rawMeta[8:16], 9)
+	binary.BigEndian.PutUint64(rawMeta[16:24], 128)
+	binary.BigEndian.PutUint64(rawMeta[24:32], 64)
+	binary.BigEndian.PutUint64(rawMeta[32:40], 256)
+
+	base := &MdictBase{
+		filePath: "encrypted-key-info.mdx",
+		meta: &mdictMeta{
+			version:                 2,
+			numberWidth:             8,
+			encryptType:             EncryptKeyInfoEnc,
+			keyBlockMetaStartOffset: 18,
+		},
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = base.parseKeyBlockMeta(rawMeta, 422)
+	}
+}
+
+func TestMdictBaseParseKeyBlockMeta_RejectsInvalidPlainAndLegacyMetadata(t *testing.T) {
+	t.Parallel()
+
+	base := &MdictBase{
+		filePath: "invalid-encrypted-key-info.mdx",
+		meta: &mdictMeta{
+			version:                 2,
+			numberWidth:             8,
+			encryptType:             EncryptKeyInfoEnc,
+			keyBlockMetaStartOffset: 18,
+		},
+	}
+
+	meta, err := base.parseKeyBlockMeta(make([]byte, 40), 422)
+	require.Error(t, err)
+	assert.Nil(t, meta)
+	assert.Contains(t, err.Error(), "parse key block metadata")
+}
+
+func TestMdictBaseDecodeKeyBlockInfo_StillDecryptsEncryptedKeyInfo(t *testing.T) {
+	t.Parallel()
+
+	keyInfo := make([]byte, 0, 40)
+	keyInfo = binary.BigEndian.AppendUint64(keyInfo, 1)
+	keyInfo = binary.BigEndian.AppendUint16(keyInfo, 1)
+	keyInfo = append(keyInfo, 'a', 0)
+	keyInfo = binary.BigEndian.AppendUint16(keyInfo, 1)
+	keyInfo = append(keyInfo, 'z', 0)
+	keyInfo = binary.BigEndian.AppendUint64(keyInfo, 8)
+	keyInfo = binary.BigEndian.AppendUint64(keyInfo, 4)
+	compressedKeyInfo := zlibBytes(t, keyInfo)
+	keyInfoBlock := []byte{2, 0, 0, 0}
+	keyInfoBlock = binary.BigEndian.AppendUint32(keyInfoBlock, adler32.Checksum(keyInfo))
+	keyInfoBlock = append(keyInfoBlock, compressedKeyInfo...)
+	encryptedKeyInfoBlock := encryptMDXBlockForTest(keyInfoBlock)
+
+	base := &MdictBase{
+		filePath: "encrypted-key-info.mdx",
+		fileType: MdictTypeMdx,
+		meta: &mdictMeta{
+			version:     2,
+			numberWidth: 8,
+			encryptType: EncryptKeyInfoEnc,
+			encoding:    EncodingUtf8,
+		},
+		keyBlockMeta: &mdictKeyBlockMeta{
+			keyBlockNum:                1,
+			entriesNum:                 1,
+			keyBlockInfoDecompressSize: int64(len(keyInfo)),
+			keyBlockInfoCompressedSize: int64(len(encryptedKeyInfoBlock)),
+			keyBlockDataTotalSize:      8,
+			keyBlockInfoStartOffset:    44,
+		},
+	}
+
+	require.NoError(t, base.decodeKeyBlockInfo(encryptedKeyInfoBlock))
+	require.NotNil(t, base.keyBlockInfo)
+	require.Len(t, base.keyBlockInfo.keyBlockInfoList, 1)
+	item := base.keyBlockInfo.keyBlockInfoList[0]
+	assert.Equal(t, "a", item.firstKey)
+	assert.Equal(t, "z", item.lastKey)
+	assert.Equal(t, int64(8), item.keyBlockCompressSize)
+	assert.Equal(t, int64(4), item.keyBlockDeCompressSize)
+}
+
+func TestMdictBaseReadKeyBlockMeta_RetriesLegacyMetadataDecryption(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -117,6 +236,7 @@ func TestMdictBaseReadKeyBlockMeta_FallsBackWhenEncryptedMetadataLooksInvalid(t 
 	binary.BigEndian.PutUint64(rawMeta[16:24], 128)
 	binary.BigEndian.PutUint64(rawMeta[24:32], 64)
 	binary.BigEndian.PutUint64(rawMeta[32:40], 256)
+	encryptedMeta := encryptMDXBlockForTest(rawMeta)
 
 	file, err := os.Create(path)
 	require.NoError(t, err)
@@ -126,7 +246,7 @@ func TestMdictBaseReadKeyBlockMeta_FallsBackWhenEncryptedMetadataLooksInvalid(t 
 	_, err = file.Write(headerText)
 	require.NoError(t, err)
 	require.NoError(t, binary.Write(file, binary.LittleEndian, uint32(0)))
-	_, err = file.Write(rawMeta)
+	_, err = file.Write(encryptedMeta)
 	require.NoError(t, err)
 
 	paddingSize := 44 + 64 + 256
@@ -152,4 +272,22 @@ func TestMdictBaseReadKeyBlockMeta_FallsBackWhenEncryptedMetadataLooksInvalid(t 
 	assert.Equal(t, int64(64), base.keyBlockMeta.keyBlockInfoCompressedSize)
 	assert.Equal(t, int64(256), base.keyBlockMeta.keyBlockDataTotalSize)
 	assert.Equal(t, int64(62), base.keyBlockMeta.keyBlockInfoStartOffset)
+}
+
+func encryptMDXBlockForTest(plain []byte) []byte {
+	encrypted := append([]byte(nil), plain...)
+	keyInput := make([]byte, 8)
+	copy(keyInput, encrypted[4:8])
+	keyInput[4] = 0x95
+	keyInput[5] = 0x36
+	key := ripemd128bytes(keyInput)
+
+	previous := byte(0x36)
+	for i := range encrypted[8:] {
+		ciphertext := encrypted[i+8] ^ byte(i) ^ key[i%len(key)] ^ previous
+		ciphertext = ciphertext>>4 | ciphertext<<4
+		encrypted[i+8] = ciphertext
+		previous = ciphertext
+	}
+	return encrypted
 }

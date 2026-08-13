@@ -127,6 +127,13 @@ func (s *MemoryIndexStore) SaveManifest(manifest IndexManifest) error {
 	return nil
 }
 
+// HasDictionaryIndex reports whether Put completed for a dictionary, including
+// dictionaries with no indexable entries.
+func (s *MemoryIndexStore) HasDictionaryIndex(dictionaryName string) (bool, error) {
+	_, ok := s.entriesByDict[dictionaryName]
+	return ok, nil
+}
+
 // DeleteDictionary removes one dictionary's entries and manifest.
 func (s *MemoryIndexStore) DeleteDictionary(dictionaryName string) error {
 	delete(s.entriesByDict, dictionaryName)
@@ -209,24 +216,6 @@ func indexStoreLookupKey(entry IndexEntry) string {
 		return entry.NormalizedKeyword
 	}
 	return entry.Keyword
-}
-
-func prefixCandidatesForKey(key string, maxLen int) []string {
-	key = strings.ToLower(strings.TrimSpace(key))
-	if key == "" {
-		return nil
-	}
-
-	limit := maxLen
-	if limit <= 0 || len(key) < limit {
-		limit = len(key)
-	}
-
-	out := make([]string, 0, limit)
-	for i := 1; i <= limit; i++ {
-		out = append(out, key[:i])
-	}
-	return out
 }
 
 func fuzzyScore(query, key string) (float64, string, bool) {

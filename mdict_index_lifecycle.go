@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const defaultIndexSchemaVersion = "v1"
+const defaultIndexSchemaVersion = "v2"
 
 var indexSyncLocks sync.Map
 
@@ -64,6 +64,13 @@ type ManagedIndexStore interface {
 	LoadManifest(dictionaryName string) (IndexManifest, error)
 	SaveManifest(manifest IndexManifest) error
 	DeleteDictionary(dictionaryName string) error
+}
+
+// IndexHealthStore optionally verifies that the data referenced by a reusable
+// manifest still exists. This protects lifecycle caches from external eviction
+// or restore operations that remove index data without changing the source.
+type IndexHealthStore interface {
+	HasDictionaryIndex(dictionaryName string) (bool, error)
 }
 
 // IndexBuildLeaseStore optionally coordinates index rebuild ownership across processes.
@@ -260,17 +267,23 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 	}
 
 	if manifestErr == nil && shouldReuseManifest(manifest, dictPath, fingerprint, cfg) {
-		if manifest.ExpiresAt != nil {
-			manifest.ExpiresAt = nil
-			if err := store.SaveManifest(manifest); err != nil {
-				return nil, err
-			}
+		ready, err := hasDictionaryIndex(store, dictName)
+		if err != nil {
+			return nil, err
 		}
-		return &EnsureIndexResult{
-			DictionaryName: dictName,
-			Reused:         true,
-			Manifest:       manifest,
-		}, nil
+		if ready {
+			if manifest.ExpiresAt != nil {
+				manifest.ExpiresAt = nil
+				if err := store.SaveManifest(manifest); err != nil {
+					return nil, err
+				}
+			}
+			return &EnsureIndexResult{
+				DictionaryName: dictName,
+				Reused:         true,
+				Manifest:       manifest,
+			}, nil
+		}
 	}
 
 	releaseLease, waitResult, err := acquireIndexBuildLease(dictName, dictPath, fingerprint, store, cfg)
@@ -315,6 +328,14 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 	}, nil
 }
 
+func hasDictionaryIndex(store ManagedIndexStore, dictionaryName string) (bool, error) {
+	healthStore, ok := store.(IndexHealthStore)
+	if !ok {
+		return true, nil
+	}
+	return healthStore.HasDictionaryIndex(dictionaryName)
+}
+
 func acquireIndexBuildLease(dictName, dictPath, fingerprint string, store ManagedIndexStore, cfg IndexSyncConfig) (func() error, *EnsureIndexResult, error) {
 	leaseStore, ok := store.(IndexBuildLeaseStore)
 	if !ok || cfg.RebuildLeaseTTL <= 0 {
@@ -336,11 +357,17 @@ func acquireIndexBuildLease(dictName, dictPath, fingerprint string, store Manage
 			return nil, nil, manifestErr
 		}
 		if manifestErr == nil && shouldReuseManifest(manifest, dictPath, fingerprint, cfg) {
-			return nil, &EnsureIndexResult{
-				DictionaryName: dictName,
-				Reused:         true,
-				Manifest:       manifest,
-			}, nil
+			ready, err := hasDictionaryIndex(store, dictName)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ready {
+				return nil, &EnsureIndexResult{
+					DictionaryName: dictName,
+					Reused:         true,
+					Manifest:       manifest,
+				}, nil
+			}
 		}
 
 		if time.Now().After(deadline) {
@@ -368,6 +395,16 @@ func indexSyncLockKey(dictPath string) string {
 
 func ensureMissingSourceIndex(dictName string, store ManagedIndexStore, cfg IndexSyncConfig, manifest IndexManifest, manifestErr error) (*EnsureIndexResult, error) {
 	if manifestErr != nil {
+		return nil, os.ErrNotExist
+	}
+	ready, err := hasDictionaryIndex(store, dictName)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		if err := store.DeleteDictionary(dictName); err != nil {
+			return nil, err
+		}
 		return nil, os.ErrNotExist
 	}
 	if cfg.MissingSourceTTL <= 0 {

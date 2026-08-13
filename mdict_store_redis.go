@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,12 +16,28 @@ import (
 
 const defaultRedisPrefixIndexMaxLen = 8
 
+const (
+	redisWriteBatchSize   = 500
+	redisMembersBatchSize = 1000
+)
+
 type redisIndexBackend interface {
 	Set(ctx context.Context, key, value string) error
 	SetNX(ctx context.Context, key, value string, expiration time.Duration) (bool, error)
 	Get(ctx context.Context, key string) (string, error)
+	MGet(ctx context.Context, keys ...string) ([]string, error)
+	HSetMany(ctx context.Context, key string, values map[string]string) error
+	HGet(ctx context.Context, key, field string) (string, error)
+	HMGet(ctx context.Context, key string, fields ...string) ([]string, error)
+	HLen(ctx context.Context, key string) (int64, error)
 	SAdd(ctx context.Context, key string, members ...string) error
+	SAddMany(ctx context.Context, sets map[string][]string) error
 	SMembers(ctx context.Context, key string) ([]string, error)
+	SCard(ctx context.Context, key string) (int64, error)
+	ZAddMany(ctx context.Context, key string, members []string) error
+	ZRangeByLex(ctx context.Context, key, minValue, maxValue string, limit int64) ([]string, error)
+	ZCard(ctx context.Context, key string) (int64, error)
+	CommitIndex(ctx context.Context, exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey, readyValue string) error
 	Del(ctx context.Context, keys ...string) error
 	CompareAndDelete(ctx context.Context, key, value string) (bool, error)
 }
@@ -31,6 +48,55 @@ type redisIndexBackendAdapter struct {
 
 func (r *redisIndexBackendAdapter) Set(ctx context.Context, key, value string) error {
 	return r.client.Set(ctx, key, value, 0).Err()
+}
+
+func (r *redisIndexBackendAdapter) HSetMany(ctx context.Context, key string, values map[string]string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(values)*2)
+	for field, value := range values {
+		args = append(args, field, value)
+	}
+	return r.client.HSet(ctx, key, args...).Err()
+}
+
+func (r *redisIndexBackendAdapter) HGet(ctx context.Context, key, field string) (string, error) {
+	value, err := r.client.HGet(ctx, key, field).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrIndexMiss
+	}
+	return value, err
+}
+
+func (r *redisIndexBackendAdapter) HMGet(ctx context.Context, key string, fields ...string) ([]string, error) {
+	values, err := r.client.HMGet(ctx, key, fields...).Result()
+	if err != nil {
+		return nil, err
+	}
+	results := make([]string, len(values))
+	found := false
+	for index, value := range values {
+		switch value := value.(type) {
+		case nil:
+		case string:
+			results[index] = value
+			found = true
+		case []byte:
+			results[index] = string(value)
+			found = true
+		default:
+			return nil, errors.New("unexpected Redis index hash value")
+		}
+	}
+	if !found {
+		return nil, ErrIndexMiss
+	}
+	return results, nil
+}
+
+func (r *redisIndexBackendAdapter) HLen(ctx context.Context, key string) (int64, error) {
+	return r.client.HLen(ctx, key).Result()
 }
 
 func (r *redisIndexBackendAdapter) SetNX(ctx context.Context, key, value string, expiration time.Duration) (bool, error) {
@@ -57,6 +123,46 @@ func (r *redisIndexBackendAdapter) SAdd(ctx context.Context, key string, members
 	return r.client.SAdd(ctx, key, args...).Err()
 }
 
+func (r *redisIndexBackendAdapter) SAddMany(ctx context.Context, sets map[string][]string) error {
+	if len(sets) == 0 {
+		return nil
+	}
+	type setMembers struct {
+		key     string
+		members []string
+	}
+	commands := make([]setMembers, 0, redisWriteBatchSize)
+	flush := func() error {
+		_, err := r.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+			for _, command := range commands {
+				args := make([]any, len(command.members))
+				for index, member := range command.members {
+					args[index] = member
+				}
+				pipe.SAdd(ctx, command.key, args...)
+			}
+			return nil
+		})
+		commands = commands[:0]
+		return err
+	}
+	for key, members := range sets {
+		for start := 0; start < len(members); start += redisMembersBatchSize {
+			end := min(start+redisMembersBatchSize, len(members))
+			commands = append(commands, setMembers{key: key, members: members[start:end]})
+			if len(commands) >= redisWriteBatchSize {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if len(commands) > 0 {
+		return flush()
+	}
+	return nil
+}
+
 func (r *redisIndexBackendAdapter) SMembers(ctx context.Context, key string) ([]string, error) {
 	values, err := r.client.SMembers(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
@@ -65,11 +171,103 @@ func (r *redisIndexBackendAdapter) SMembers(ctx context.Context, key string) ([]
 	return values, err
 }
 
+func (r *redisIndexBackendAdapter) SCard(ctx context.Context, key string) (int64, error) {
+	return r.client.SCard(ctx, key).Result()
+}
+
+func (r *redisIndexBackendAdapter) ZAddMany(ctx context.Context, key string, members []string) error {
+	if len(members) == 0 {
+		return nil
+	}
+	_, err := r.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for start := 0; start < len(members); start += redisMembersBatchSize {
+			end := min(start+redisMembersBatchSize, len(members))
+			values := make([]redis.Z, end-start)
+			for index, member := range members[start:end] {
+				values[index] = redis.Z{Member: member}
+			}
+			pipe.ZAdd(ctx, key, values...)
+		}
+		return nil
+	})
+	return err
+}
+
+func (r *redisIndexBackendAdapter) ZRangeByLex(ctx context.Context, key, minValue, maxValue string, limit int64) ([]string, error) {
+	// ZRANGEBYLEX keeps compatibility with Redis protocol servers before 6.2;
+	// the newer ZRANGE BYLEX syntax is not accepted by those releases.
+	values, err := r.client.ZRangeByLex(ctx, key, &redis.ZRangeBy{ //nolint:staticcheck
+		Min:   minValue,
+		Max:   maxValue,
+		Count: limit,
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, ErrIndexMiss
+	}
+	return values, nil
+}
+
+func (r *redisIndexBackendAdapter) ZCard(ctx context.Context, key string) (int64, error) {
+	return r.client.ZCard(ctx, key).Result()
+}
+
+func (r *redisIndexBackendAdapter) CommitIndex(ctx context.Context, exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey, readyValue string) error {
+	const script = `
+local expected = tonumber(ARGV[2])
+if redis.call("hlen", KEYS[4]) ~= expected or redis.call("zcard", KEYS[5]) ~= expected then
+  return redis.error_reply("staging index is incomplete")
+end
+redis.call("del", KEYS[1], KEYS[2])
+if redis.call("exists", KEYS[4]) == 1 then redis.call("rename", KEYS[4], KEYS[1]) end
+if redis.call("exists", KEYS[5]) == 1 then redis.call("rename", KEYS[5], KEYS[2]) end
+redis.call("set", KEYS[3], ARGV[1])
+return 1`
+	_, countText, ok := strings.Cut(readyValue, ":")
+	if !ok {
+		return errors.New("invalid index ready marker")
+	}
+	return r.client.Eval(ctx, script,
+		[]string{exactKey, lexKey, readyKey, stagingExactKey, stagingLexKey},
+		readyValue,
+		countText,
+	).Err()
+}
+
+func (r *redisIndexBackendAdapter) MGet(ctx context.Context, keys ...string) ([]string, error) {
+	values, err := r.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	results := make([]string, len(values))
+	for index, value := range values {
+		switch value := value.(type) {
+		case nil:
+		case string:
+			results[index] = value
+		case []byte:
+			results[index] = string(value)
+		default:
+			return nil, errors.New("unexpected Redis index value")
+		}
+	}
+	return results, nil
+}
+
 func (r *redisIndexBackendAdapter) Del(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	return r.client.Del(ctx, keys...).Err()
+	_, err := r.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for start := 0; start < len(keys); start += redisMembersBatchSize {
+			end := min(start+redisMembersBatchSize, len(keys))
+			pipe.Del(ctx, keys[start:end]...)
+		}
+		return nil
+	})
+	return err
 }
 
 func (r *redisIndexBackendAdapter) CompareAndDelete(ctx context.Context, key, value string) (bool, error) {
@@ -108,7 +306,7 @@ func WithRedisPrefixIndexMaxLen(maxLen int) RedisIndexStoreOption {
 	}
 }
 
-// RedisIndexStore is a Redis-backed reference implementation of ManagedIndexStore.
+// RedisIndexStore is a Redis-protocol-compatible implementation of ManagedIndexStore.
 type RedisIndexStore struct {
 	ctx               context.Context
 	prefix            string
@@ -142,6 +340,10 @@ func (s *RedisIndexStore) dictExactKey(dictionaryName, keyword string) string {
 	return s.prefix + ":" + dictionaryName + ":exact:" + keyword
 }
 
+func (s *RedisIndexStore) dictExactHashKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":entries"
+}
+
 func (s *RedisIndexStore) dictPrefixSetKey(dictionaryName, prefix string) string {
 	return s.prefix + ":" + dictionaryName + ":prefix:" + prefix
 }
@@ -150,11 +352,19 @@ func (s *RedisIndexStore) dictManifestKey(dictionaryName string) string {
 	return s.prefix + ":" + dictionaryName + ":manifest"
 }
 
+func (s *RedisIndexStore) dictLexKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":lex"
+}
+
+func (s *RedisIndexStore) dictReadyKey(dictionaryName string) string {
+	return s.prefix + ":" + dictionaryName + ":ready"
+}
+
 func (s *RedisIndexStore) dictBuildLeaseKey(dictionaryName string) string {
 	return s.prefix + ":" + dictionaryName + ":build-lease"
 }
 
-// Put stores dictionary metadata and index entries in Redis.
+// Put stores dictionary metadata and index entries in a Redis-compatible server.
 func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 	if strings.TrimSpace(info.Name) == "" {
 		return errors.New("dictionary name is required")
@@ -162,6 +372,8 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 
 	keysSet := s.dictKeysSetKey(info.Name)
 	prefixRegistry := s.dictPrefixRegistryKey(info.Name)
+	lexKey := s.dictLexKey(info.Name)
+	exactHashKey := s.dictExactHashKey(info.Name)
 	oldKeys, err := s.backend.SMembers(s.ctx, keysSet)
 	if err != nil && !errors.Is(err, ErrIndexMiss) {
 		return err
@@ -171,22 +383,42 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 		return err
 	}
 
-	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+2)
-	toDelete = append(toDelete, keysSet, prefixRegistry)
+	legacyKeys := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+2)
+	legacyKeys = append(legacyKeys, keysSet, prefixRegistry)
 	for _, keyword := range oldKeys {
-		toDelete = append(toDelete, s.dictExactKey(info.Name, keyword))
+		legacyKeys = append(legacyKeys, s.dictExactKey(info.Name, keyword))
 	}
-	toDelete = append(toDelete, oldPrefixSets...)
-	if err := s.backend.Del(s.ctx, toDelete...); err != nil {
+	legacyKeys = append(legacyKeys, oldPrefixSets...)
+
+	token, err := newRedisBuildLeaseToken()
+	if err != nil {
 		return err
 	}
+	stagingExactKey := exactHashKey + ":staging:" + token
+	stagingLexKey := lexKey + ":staging:" + token
+	defer func() {
+		if err := s.backend.Del(s.ctx, stagingExactKey, stagingLexKey); err != nil {
+			log.Warningf("delete staging index for %s: %v", info.Name, err)
+		}
+	}()
 
 	registry := make([]string, 0, len(entries))
 	seenKeys := make(map[string]struct{}, len(entries))
-	prefixMembers := make(map[string][]string)
+	lexMembers := make([]string, 0, len(entries))
+	exactValues := make(map[string]string, redisWriteBatchSize)
+	flushExactValues := func() error {
+		if err := s.backend.HSetMany(s.ctx, stagingExactKey, exactValues); err != nil {
+			return err
+		}
+		clear(exactValues)
+		return nil
+	}
 	for _, entry := range entries {
 		key := indexStoreLookupKey(entry)
 		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if _, ok := seenKeys[key]; ok {
 			continue
 		}
 
@@ -194,46 +426,51 @@ func (s *RedisIndexStore) Put(info DictionaryInfo, entries []IndexEntry) error {
 		if err != nil {
 			return err
 		}
-		if err := s.backend.Set(s.ctx, s.dictExactKey(info.Name, key), string(payload)); err != nil {
-			return err
-		}
-
-		if _, ok := seenKeys[key]; !ok {
-			seenKeys[key] = struct{}{}
-			registry = append(registry, key)
-
-			for _, prefix := range prefixCandidatesForKey(key, s.prefixIndexMaxLen) {
-				prefixKey := s.dictPrefixSetKey(info.Name, prefix)
-				prefixMembers[prefixKey] = append(prefixMembers[prefixKey], key)
-			}
-		}
-	}
-
-	if len(registry) > 0 {
-		if err := s.backend.SAdd(s.ctx, keysSet, registry...); err != nil {
-			return err
-		}
-	}
-
-	if len(prefixMembers) > 0 {
-		prefixSetKeys := make([]string, 0, len(prefixMembers))
-		for prefixKey, members := range prefixMembers {
-			if err := s.backend.SAdd(s.ctx, prefixKey, members...); err != nil {
+		exactValues[key] = string(payload)
+		if len(exactValues) >= redisWriteBatchSize {
+			if err := flushExactValues(); err != nil {
 				return err
 			}
-			prefixSetKeys = append(prefixSetKeys, prefixKey)
 		}
-		if err := s.backend.SAdd(s.ctx, prefixRegistry, prefixSetKeys...); err != nil {
-			return err
-		}
+
+		seenKeys[key] = struct{}{}
+		registry = append(registry, key)
+		lexMembers = append(lexMembers, redisLexMember(key))
+	}
+	if err := flushExactValues(); err != nil {
+		return err
 	}
 
+	if err := s.backend.ZAddMany(s.ctx, stagingLexKey, lexMembers); err != nil {
+		return err
+	}
+	if err := s.backend.CommitIndex(s.ctx,
+		exactHashKey,
+		lexKey,
+		s.dictReadyKey(info.Name),
+		stagingExactKey,
+		stagingLexKey,
+		"v2:"+strconv.Itoa(len(registry)),
+	); err != nil {
+		return err
+	}
+	if err := s.backend.Del(s.ctx, legacyKeys...); err != nil {
+		log.Warningf("delete legacy index for %s: %v", info.Name, err)
+	}
 	return nil
 }
 
-// GetExact returns one exact entry from Redis.
+// GetExact returns one exact entry from a Redis-compatible server.
 func (s *RedisIndexStore) GetExact(dictionaryName, keyword string) (IndexEntry, error) {
-	raw, err := s.backend.Get(s.ctx, s.dictExactKey(dictionaryName, keyword))
+	raw, err := s.backend.HGet(s.ctx, s.dictExactHashKey(dictionaryName), keyword)
+	if errors.Is(err, ErrIndexMiss) {
+		_, markerErr := s.backend.Get(s.ctx, s.dictReadyKey(dictionaryName))
+		if errors.Is(markerErr, ErrIndexMiss) {
+			raw, err = s.backend.Get(s.ctx, s.dictExactKey(dictionaryName, keyword))
+		} else if markerErr != nil {
+			return IndexEntry{}, markerErr
+		}
+	}
 	if err != nil {
 		return IndexEntry{}, err
 	}
@@ -248,45 +485,122 @@ func (s *RedisIndexStore) GetExact(dictionaryName, keyword string) (IndexEntry, 
 // PrefixSearch returns entries that share the supplied prefix.
 func (s *RedisIndexStore) PrefixSearch(dictionaryName, prefix string, limit int) ([]IndexEntry, error) {
 	prefixLower := strings.ToLower(strings.TrimSpace(prefix))
-	var (
-		keys []string
-		err  error
-	)
+	keys, err := s.prefixSearchLex(dictionaryName, prefixLower, limit)
+	if err == nil {
+		return s.loadPrefixEntries(dictionaryName, keys, false)
+	}
+	if !errors.Is(err, ErrIndexMiss) {
+		return nil, err
+	}
+	_, markerErr := s.backend.Get(s.ctx, s.dictReadyKey(dictionaryName))
+	if markerErr == nil {
+		return nil, ErrIndexMiss
+	}
+	if !errors.Is(markerErr, ErrIndexMiss) {
+		return nil, markerErr
+	}
+	return s.prefixSearchLegacy(dictionaryName, prefixLower, limit)
+}
 
-	if prefixLower == "" {
-		keys, err = s.backend.SMembers(s.ctx, s.dictKeysSetKey(dictionaryName))
-		if err != nil {
-			return nil, err
+func (s *RedisIndexStore) prefixSearchLex(dictionaryName, prefixLower string, limit int) ([]string, error) {
+	minValue := "-"
+	maxValue := "+"
+	if prefixLower != "" {
+		minValue = "[" + prefixLower
+		maxValue = "[" + prefixLower + "\xff"
+	}
+	resultLimit := int64(0)
+	if limit > 0 {
+		resultLimit = int64(limit)
+	}
+	members, err := s.backend.ZRangeByLex(s.ctx, s.dictLexKey(dictionaryName), minValue, maxValue, resultLimit)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(members))
+	for _, member := range members {
+		_, key, ok := strings.Cut(member, "\x00")
+		if ok {
+			keys = append(keys, key)
 		}
+	}
+	if len(keys) == 0 {
+		return nil, ErrIndexMiss
+	}
+	return keys, nil
+}
+
+func (s *RedisIndexStore) prefixSearchLegacy(dictionaryName, prefixLower string, limit int) ([]IndexEntry, error) {
+	var setKey string
+	if prefixLower == "" {
+		setKey = s.dictKeysSetKey(dictionaryName)
 	} else {
 		lookupPrefix := prefixLower
 		if len(lookupPrefix) > s.prefixIndexMaxLen {
 			lookupPrefix = lookupPrefix[:s.prefixIndexMaxLen]
 		}
-		keys, err = s.backend.SMembers(s.ctx, s.dictPrefixSetKey(dictionaryName, lookupPrefix))
-		if err != nil {
-			return nil, err
-		}
+		setKey = s.dictPrefixSetKey(dictionaryName, lookupPrefix)
 	}
-
+	keys, err := s.backend.SMembers(s.ctx, setKey)
+	if err != nil {
+		return nil, err
+	}
 	sort.Strings(keys)
-
-	results := make([]IndexEntry, 0)
-	for _, keyword := range keys {
-		if prefixLower != "" && !strings.HasPrefix(strings.ToLower(keyword), prefixLower) {
+	selected := keys[:0]
+	for _, key := range keys {
+		if prefixLower != "" && !strings.HasPrefix(strings.ToLower(key), prefixLower) {
 			continue
 		}
-
-		entry, err := s.GetExact(dictionaryName, keyword)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, entry)
-		if limit > 0 && len(results) >= limit {
+		selected = append(selected, key)
+		if limit > 0 && len(selected) >= limit {
 			break
 		}
 	}
+	if len(selected) == 0 {
+		return nil, ErrIndexMiss
+	}
+	return s.loadPrefixEntries(dictionaryName, selected, true)
+}
 
+func (s *RedisIndexStore) loadPrefixEntries(dictionaryName string, keys []string, legacy bool) ([]IndexEntry, error) {
+	var (
+		values []string
+		err    error
+	)
+	if legacy {
+		valueKeys := make([]string, len(keys))
+		for index, key := range keys {
+			valueKeys[index] = s.dictExactKey(dictionaryName, key)
+		}
+		values, err = s.backend.MGet(s.ctx, valueKeys...)
+	} else {
+		values, err = s.backend.HMGet(s.ctx, s.dictExactHashKey(dictionaryName), keys...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !legacy {
+		for _, value := range values {
+			if value == "" {
+				return nil, ErrIndexMiss
+			}
+		}
+	}
+	return prefixResults(values)
+}
+
+func prefixResults(values []string) ([]IndexEntry, error) {
+	results := make([]IndexEntry, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		var entry IndexEntry
+		if err := json.Unmarshal([]byte(value), &entry); err != nil {
+			return nil, err
+		}
+		results = append(results, entry)
+	}
 	if len(results) == 0 {
 		return nil, ErrIndexMiss
 	}
@@ -318,6 +632,39 @@ func (s *RedisIndexStore) SaveManifest(manifest IndexManifest) error {
 	return s.backend.Set(s.ctx, s.dictManifestKey(manifest.DictionaryName), string(payload))
 }
 
+// HasDictionaryIndex verifies the completed index marker and key registry.
+// Indexes created before completion markers were introduced remain reusable.
+func (s *RedisIndexStore) HasDictionaryIndex(dictionaryName string) (bool, error) {
+	marker, markerErr := s.backend.Get(s.ctx, s.dictReadyKey(dictionaryName))
+	if markerErr != nil && !errors.Is(markerErr, ErrIndexMiss) {
+		return false, markerErr
+	}
+	if errors.Is(markerErr, ErrIndexMiss) {
+		count, err := s.backend.SCard(s.ctx, s.dictKeysSetKey(dictionaryName))
+		if err != nil {
+			return false, err
+		}
+		return count > 0, nil
+	}
+	countText, versioned := strings.CutPrefix(marker, "v2:")
+	if !versioned {
+		return false, nil
+	}
+	expected, err := strconv.ParseInt(countText, 10, 64)
+	if err != nil || expected < 0 {
+		return false, nil
+	}
+	lexCount, err := s.backend.ZCard(s.ctx, s.dictLexKey(dictionaryName))
+	if err != nil {
+		return false, err
+	}
+	exactCount, err := s.backend.HLen(s.ctx, s.dictExactHashKey(dictionaryName))
+	if err != nil {
+		return false, err
+	}
+	return exactCount == expected && lexCount == expected, nil
+}
+
 // DeleteDictionary removes one dictionary's entries and manifest.
 func (s *RedisIndexStore) DeleteDictionary(dictionaryName string) error {
 	keysSet := s.dictKeysSetKey(dictionaryName)
@@ -331,13 +678,17 @@ func (s *RedisIndexStore) DeleteDictionary(dictionaryName string) error {
 		return err
 	}
 
-	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+3)
-	toDelete = append(toDelete, keysSet, prefixRegistry, s.dictManifestKey(dictionaryName))
+	toDelete := make([]string, 0, len(oldKeys)+len(oldPrefixSets)+6)
+	toDelete = append(toDelete, keysSet, prefixRegistry, s.dictLexKey(dictionaryName), s.dictExactHashKey(dictionaryName), s.dictManifestKey(dictionaryName), s.dictReadyKey(dictionaryName))
 	for _, keyword := range oldKeys {
 		toDelete = append(toDelete, s.dictExactKey(dictionaryName, keyword))
 	}
 	toDelete = append(toDelete, oldPrefixSets...)
 	return s.backend.Del(s.ctx, toDelete...)
+}
+
+func redisLexMember(key string) string {
+	return strings.ToLower(key) + "\x00" + key
 }
 
 // AcquireIndexBuildLease coordinates dictionary index rebuild ownership across processes.

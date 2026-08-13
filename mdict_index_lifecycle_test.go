@@ -34,8 +34,11 @@ type stagedLeaseStore struct {
 	manifest       IndexManifest
 	loadCalls      atomic.Int32
 	leaseAttempts  atomic.Int32
+	healthChecks   atomic.Int32
 	putCalls       atomic.Int32
 	savedManifests atomic.Int32
+	healthy        bool
+	acquireAfter   int32
 }
 
 func (s *stagedLeaseStore) Put(DictionaryInfo, []IndexEntry) error {
@@ -60,8 +63,15 @@ func (s *stagedLeaseStore) SaveManifest(IndexManifest) error {
 }
 func (s *stagedLeaseStore) DeleteDictionary(string) error { return nil }
 func (s *stagedLeaseStore) AcquireIndexBuildLease(string, time.Duration) (func() error, bool, error) {
-	s.leaseAttempts.Add(1)
+	attempt := s.leaseAttempts.Add(1)
+	if s.acquireAfter > 0 && attempt >= s.acquireAfter {
+		return func() error { return nil }, true, nil
+	}
 	return nil, false, nil
+}
+func (s *stagedLeaseStore) HasDictionaryIndex(string) (bool, error) {
+	s.healthChecks.Add(1)
+	return s.healthy, nil
 }
 
 func TestResolveIndexSyncConfigDefaults(t *testing.T) {
@@ -103,6 +113,31 @@ func TestEnsureDictionaryIndex_ReusesMatchingManifest(t *testing.T) {
 	assert.True(t, result.Reused)
 	assert.False(t, result.Rebuilt)
 	assert.Equal(t, manifest.Fingerprint, result.Manifest.Fingerprint)
+}
+
+func TestEnsureDictionaryIndex_RebuildsWhenManifestOutlivesIndexData(t *testing.T) {
+	t.Parallel()
+
+	dictPath := filepath.Join(t.TempDir(), "demo.mdx")
+	require.NoError(t, os.WriteFile(dictPath, []byte("demo"), 0o644))
+	store := NewMemoryIndexStore()
+	cfg := ResolveIndexSyncConfig()
+	fingerprint, err := cfg.Fingerprinter.Fingerprint(dictPath)
+	require.NoError(t, err)
+	require.NoError(t, store.SaveManifest(buildManifest(cfg, "demo", dictPath, fingerprint, nil)))
+
+	opened := false
+	result, err := ensureDictionaryIndexWithDeps(dictPath, store, cfg, func(string) (externalIndexDictionary, error) {
+		opened = true
+		return &stubExternalIndexDict{
+			name:    "demo",
+			info:    DictionaryInfo{Name: "demo"},
+			entries: []IndexEntry{{Keyword: "ability"}},
+		}, nil
+	})
+	require.NoError(t, err)
+	assert.True(t, opened)
+	assert.True(t, result.Rebuilt)
 }
 
 func TestEnsureDictionaryIndex_SerializesConcurrentRebuildsForSameSource(t *testing.T) {
@@ -192,6 +227,7 @@ func TestEnsureDictionaryIndex_ReusesManifestCreatedByExternalLeaseHolder(t *tes
 	require.NoError(t, err)
 	store := &stagedLeaseStore{
 		manifest: buildManifest(cfg, "demo", dictPath, fingerprint, nil),
+		healthy:  true,
 	}
 
 	opened := false
@@ -206,6 +242,37 @@ func TestEnsureDictionaryIndex_ReusesManifestCreatedByExternalLeaseHolder(t *tes
 	assert.Equal(t, int32(0), store.putCalls.Load())
 	assert.Equal(t, int32(0), store.savedManifests.Load())
 	assert.GreaterOrEqual(t, store.leaseAttempts.Load(), int32(1))
+	assert.GreaterOrEqual(t, store.healthChecks.Load(), int32(1))
+}
+
+func TestEnsureDictionaryIndex_DoesNotReuseEmptyIndexFromExternalLeaseHolder(t *testing.T) {
+	t.Parallel()
+
+	dictPath := filepath.Join(t.TempDir(), "demo.mdx")
+	require.NoError(t, os.WriteFile(dictPath, []byte("demo"), 0o644))
+	cfg := ResolveIndexSyncConfig(
+		WithRebuildLeaseTTL(100*time.Millisecond),
+		WithRebuildLeasePollPeriod(time.Millisecond),
+	)
+	fingerprint, err := cfg.Fingerprinter.Fingerprint(dictPath)
+	require.NoError(t, err)
+	store := &stagedLeaseStore{
+		manifest:     buildManifest(cfg, "demo", dictPath, fingerprint, nil),
+		acquireAfter: 2,
+	}
+
+	result, err := ensureDictionaryIndexWithDeps(dictPath, store, cfg, func(string) (externalIndexDictionary, error) {
+		return &stubExternalIndexDict{
+			name:    "demo",
+			info:    DictionaryInfo{Name: "demo"},
+			entries: []IndexEntry{{Keyword: "ability"}},
+		}, nil
+	})
+	require.NoError(t, err)
+	assert.True(t, result.Rebuilt)
+	assert.False(t, result.Reused)
+	assert.Equal(t, int32(1), store.putCalls.Load())
+	assert.GreaterOrEqual(t, store.healthChecks.Load(), int32(1))
 }
 
 func TestEnsureDictionaryIndex_RebuildsWhenFingerprintChanges(t *testing.T) {
@@ -252,6 +319,7 @@ func TestEnsureDictionaryIndex_SetsExpiryWhenSourceMissing(t *testing.T) {
 
 	store := NewMemoryIndexStore()
 	now := time.Unix(1700001000, 0).UTC()
+	require.NoError(t, store.Put(DictionaryInfo{Name: "missing"}, []IndexEntry{{Keyword: "ability"}}))
 	manifest := IndexManifest{
 		DictionaryName: "missing",
 		SourcePath:     "/tmp/missing.mdx",
@@ -271,6 +339,27 @@ func TestEnsureDictionaryIndex_SetsExpiryWhenSourceMissing(t *testing.T) {
 	assert.True(t, result.Reused)
 	require.NotNil(t, result.Manifest.ExpiresAt)
 	assert.Equal(t, now.Add(2*time.Hour), *result.Manifest.ExpiresAt)
+}
+
+func TestEnsureDictionaryIndex_DoesNotReuseMissingSourceWithoutIndexData(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryIndexStore()
+	require.NoError(t, store.SaveManifest(IndexManifest{
+		DictionaryName: "missing",
+		SourcePath:     "/tmp/missing.mdx",
+		Fingerprint:    "fp",
+		SchemaVersion:  defaultIndexSchemaVersion,
+	}))
+
+	_, err := ensureDictionaryIndexWithDeps("/tmp/missing.mdx", store, ResolveIndexSyncConfig(
+		WithMissingSourceTTL(time.Hour),
+	), func(string) (externalIndexDictionary, error) {
+		return nil, errors.New("should not open")
+	})
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, loadErr := store.LoadManifest("missing")
+	assert.ErrorIs(t, loadErr, ErrIndexMiss)
 }
 
 func TestEnsureDictionaryIndex_DeletesExpiredMissingSourceIndex(t *testing.T) {

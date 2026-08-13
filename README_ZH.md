@@ -132,7 +132,7 @@ fmt.Println(len(entries), len(resources))
 
 库现在提供了一个最小的 `IndexStore` 边界。你可以自己实现 Redis、SQL 或其他后端适配。仓库内也附带了一个小型内存实现：
 
-如果你要做带生命周期管理的外部索引，建议使用 `EnsureDictionaryIndex(...)` 配合 `ManagedIndexStore`。它会通过 manifest/fingerprint 自动复用未变化的索引，支持“源词典缺失时保留多久”的 TTL，并且 Redis 只是其中一个实现：
+如果你要做带生命周期管理的外部索引，建议使用 `EnsureDictionaryIndex(...)` 配合 `ManagedIndexStore`。它会通过 manifest/fingerprint 自动复用未变化的索引，支持“源词典缺失时保留多久”的 TTL，而 Valkey 等 Redis 协议兼容服务只是其中一种后端。存储还可以实现 `IndexHealthStore`；实现后，生命周期复用会确认派生索引仍然存在，而不是只信任 manifest：
 
 ```go
 store := mdx.NewRedisIndexStore(client)
@@ -148,6 +148,8 @@ if err != nil {
 }
 fmt.Println(result.Reused, result.Rebuilt)
 ```
+
+`RedisIndexStore` 为保持 API 兼容沿用现有名称，可通过 Redis 协议直接连接 Valkey。前缀查询使用每词典一个字典序 sorted set 和一个 entry hash，再用批量 `HMGET` 获取结果，因此范围过滤和 limit 都在服务端完成。
 
 如果你只是想走导出/回查链路，但不想构建内存 exact lookup，可改用 `PrepareForExternalIndex()` 而不是 `BuildIndex()`。
 

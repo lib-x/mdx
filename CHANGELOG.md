@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Reworked the Redis-compatible prefix index around one lexicographically sorted set and one entry hash per dictionary. Prefix queries now apply range and limit inside Redis or Valkey, then fetch matching entries with one `HMGET`, avoiding full prefix-set transfers and N+1 lookups.
+- Batched Redis-compatible index writes with bounded pipelines, removed the previous per-prefix-set write amplification, and atomically switches fully built staging indexes into service so failed rebuilds keep the previous index readable.
+- Added index health checks and completion markers so lifecycle reuse detects externally deleted or partially evicted derived index data while still recognizing valid empty dictionaries.
+- Advanced the default external-index schema to `v2`; lifecycle-aware stores rebuild older manifests once to populate the new prefix and health metadata.
 - Added `PrepareForResolve` for external-index consumers that only need record-block metadata, avoiding full key-list decompression and retention during lookup.
 - Changed the library logger to suppress debug traces by default; applications can still opt in through `go-logging` module configuration.
 - Added Redis-backed cross-process index build leases for lifecycle-aware external indexing, preventing multiple app replicas from rebuilding the same unchanged dictionary concurrently.

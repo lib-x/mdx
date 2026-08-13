@@ -131,7 +131,7 @@ fmt.Println(len(entries), len(resources))
 
 The library now exposes a minimal `IndexStore` boundary. You can implement it for Redis, SQL, or another backend. A small in-memory example is included:
 
-For lifecycle-aware external indexing, use `EnsureDictionaryIndex(...)` with a `ManagedIndexStore`. It reuses unchanged indexes via a manifest/fingerprint check, supports a missing-source TTL, and lets Redis remain just one backend implementation:
+For lifecycle-aware external indexing, use `EnsureDictionaryIndex(...)` with a `ManagedIndexStore`. It reuses unchanged indexes via a manifest/fingerprint check, supports a missing-source TTL, and lets a Redis-compatible server such as Valkey remain just one backend implementation. Stores may also implement `IndexHealthStore`; when present, lifecycle reuse verifies that the derived index still exists instead of trusting the manifest alone:
 
 ```go
 store := mdx.NewRedisIndexStore(client)
@@ -147,6 +147,8 @@ if err != nil {
 }
 fmt.Println(result.Reused, result.Rebuilt)
 ```
+
+`RedisIndexStore` keeps its compatibility-oriented API name and works with Valkey through the Redis protocol. Its prefix path uses a dictionary-level lexicographic sorted set plus a batched `HMGET`, so the server applies the prefix range and result limit before transferring keys.
 
 If you only need the export/resolve path without building in-memory exact lookup tables, call `PrepareForExternalIndex()` instead of `BuildIndex()`.
 

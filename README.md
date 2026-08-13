@@ -150,6 +150,22 @@ fmt.Println(result.Reused, result.Rebuilt)
 
 If you only need the export/resolve path without building in-memory exact lookup tables, call `PrepareForExternalIndex()` instead of `BuildIndex()`.
 
+When keyword entries already live in an external index, use `PrepareForResolve()`.
+It loads only record-block metadata, so resolving stored `IndexEntry` values does
+not read, decompress, or retain the dictionary's full key list:
+
+```go
+dict, err := mdx.New("dictionary.mdx")
+if err != nil {
+	log.Fatal(err)
+}
+if err := dict.PrepareForResolve(); err != nil {
+	log.Fatal(err)
+}
+
+content, err := dict.Resolve(storedEntry)
+```
+
 ```go
 store := mdx.NewMemoryIndexStore()
 

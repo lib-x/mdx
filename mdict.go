@@ -26,7 +26,15 @@ import (
 	"github.com/op/go-logging"
 )
 
-var log = logging.MustGetLogger("default")
+const loggerModule = "github.com/lib-x/mdx"
+
+var log = logging.MustGetLogger(loggerModule)
+
+func init() {
+	// Parsing and lookup have very chatty debug traces. Keep library logging
+	// quiet by default; applications can opt in with logging.SetLevel.
+	logging.SetLevel(logging.WARNING, loggerModule)
+}
 
 // Mdict is a high-level wrapper for mdx/mdd dictionary files.
 // It embeds MdictBase to handle the underlying parsing logic and provides a user-facing API.
@@ -83,6 +91,23 @@ func (mdict *Mdict) PrepareForExternalIndex() error {
 		return err
 	}
 
+	if err := mdict.readRecordBlockMeta(); err != nil {
+		return err
+	}
+
+	if err := mdict.readRecordBlockInfo(); err != nil {
+		return err
+	}
+
+	mdict.buildRecordRangeTree()
+	return nil
+}
+
+// PrepareForResolve loads only the record-block metadata needed by Resolve.
+// Use this when keyword entries live in an external index: unlike
+// PrepareForExternalIndex, it does not read, decompress, or retain the full
+// dictionary key list.
+func (mdict *Mdict) PrepareForResolve() error {
 	if err := mdict.readRecordBlockMeta(); err != nil {
 		return err
 	}

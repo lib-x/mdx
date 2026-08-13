@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Added `PrepareForResolve` for external-index consumers that only need record-block metadata, avoiding full key-list decompression and retention during lookup.
+- Changed the library logger to suppress debug traces by default; applications can still opt in through `go-logging` module configuration.
 - Added Redis-backed cross-process index build leases for lifecycle-aware external indexing, preventing multiple app replicas from rebuilding the same unchanged dictionary concurrently.
 - Serialized lifecycle-aware external index rebuilds per source path to prevent concurrent `EnsureDictionaryIndex` calls from repeatedly rebuilding the same unchanged dictionary inside one process.
 - Moved high-volume dictionary parsing and lookup trace logs from info to debug so default application logs stay quieter during indexing and lookup.

@@ -45,6 +45,9 @@ type IndexEntry struct {
 // DictionaryInfo returns exported metadata for the current dictionary.
 func (mdict *Mdict) DictionaryInfo() DictionaryInfo {
 	entryCount := int64(0)
+	if mdict.keyBlockMeta != nil {
+		entryCount = mdict.keyBlockMeta.entriesNum
+	}
 	if mdict.keyBlockData != nil {
 		entryCount = mdict.keyBlockData.keyEntriesSize
 	}

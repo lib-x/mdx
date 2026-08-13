@@ -151,6 +151,22 @@ fmt.Println(result.Reused, result.Rebuilt)
 
 如果你只是想走导出/回查链路，但不想构建内存 exact lookup，可改用 `PrepareForExternalIndex()` 而不是 `BuildIndex()`。
 
+如果关键词条已经存放在外部索引中，应使用 `PrepareForResolve()`。它只加载
+record block 元数据，因此用已存储的 `IndexEntry` 解析释义时，不会读取、解压
+或常驻保存整本词典的关键词列表：
+
+```go
+dict, err := mdx.New("dictionary.mdx")
+if err != nil {
+	log.Fatal(err)
+}
+if err := dict.PrepareForResolve(); err != nil {
+	log.Fatal(err)
+}
+
+content, err := dict.Resolve(storedEntry)
+```
+
 ```go
 store := mdx.NewMemoryIndexStore()
 

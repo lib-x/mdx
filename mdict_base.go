@@ -787,7 +787,9 @@ func (mdict *MdictBase) readRecordBlockMeta() error {
 		recordBlockMetaBufferLen = 32
 	}
 
-	recordBlockStartOffset := mdict.keyBlockInfo.keyBlockEntriesStartOffset + mdict.keyBlockMeta.keyBlockDataTotalSize
+	recordBlockStartOffset := mdict.keyBlockMeta.keyBlockInfoStartOffset +
+		mdict.keyBlockMeta.keyBlockInfoCompressedSize +
+		mdict.keyBlockMeta.keyBlockDataTotalSize
 	log.Debugf("Reading record block metadata for '%s' from offset %d, length %d", mdict.filePath, recordBlockStartOffset, recordBlockMetaBufferLen)
 
 	buffer, err := readFileFromPos(file, recordBlockStartOffset, recordBlockMetaBufferLen)

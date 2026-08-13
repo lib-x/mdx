@@ -224,7 +224,10 @@ func BuildIndexManifest(dictPath string, dictName string, opts ...IndexSyncOptio
 		return IndexManifest{}, errors.New("dictionary path is required")
 	}
 	if strings.TrimSpace(dictName) == "" {
-		dictName = dictionaryNameFromPath(dictPath)
+		dictName = cfg.IndexDictionaryName
+		if dictName == "" {
+			dictName = dictionaryNameFromPath(dictPath)
+		}
 	}
 	fingerprint, err := cfg.Fingerprinter.Fingerprint(dictPath)
 	if err != nil {
@@ -251,13 +254,12 @@ func ensureDictionaryIndexWithDeps(dictPath string, store ManagedIndexStore, cfg
 		return nil, errors.New("dictionary opener is required")
 	}
 
-	unlock := lockIndexSync(dictPath)
-	defer unlock()
-
 	dictName := cfg.IndexDictionaryName
 	if dictName == "" {
 		dictName = dictionaryNameFromPath(dictPath)
 	}
+	unlock := lockIndexSync(dictName)
+	defer unlock()
 	manifest, manifestErr := store.LoadManifest(dictName)
 	if manifestErr != nil && !errors.Is(manifestErr, ErrIndexMiss) {
 		return nil, manifestErr
@@ -391,20 +393,11 @@ func acquireIndexBuildLease(dictName, dictPath, fingerprint string, store Manage
 	}
 }
 
-func lockIndexSync(dictPath string) func() {
-	key := indexSyncLockKey(dictPath)
-	value, _ := indexSyncLocks.LoadOrStore(key, &sync.Mutex{})
+func lockIndexSync(dictionaryName string) func() {
+	value, _ := indexSyncLocks.LoadOrStore(dictionaryName, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
-}
-
-func indexSyncLockKey(dictPath string) string {
-	absPath, err := filepath.Abs(dictPath)
-	if err != nil {
-		return dictPath
-	}
-	return absPath
 }
 
 func ensureMissingSourceIndex(dictName string, store ManagedIndexStore, cfg IndexSyncConfig, manifest IndexManifest, manifestErr error) (*EnsureIndexResult, error) {

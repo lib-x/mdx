@@ -266,6 +266,59 @@ func TestEnsureDictionaryIndex_SerializesConcurrentRebuildsForSameSource(t *test
 	assert.Equal(t, callers-1, reused)
 }
 
+func TestEnsureDictionaryIndex_SerializesConcurrentRebuildsForSameNamespace(t *testing.T) {
+	paths := []string{
+		filepath.Join(t.TempDir(), "first.mdx"),
+		filepath.Join(t.TempDir(), "second.mdx"),
+	}
+	for _, path := range paths {
+		require.NoError(t, os.WriteFile(path, []byte(path), 0o644))
+	}
+
+	store := NewMemoryIndexStore()
+	cfg := ResolveIndexSyncConfig(WithIndexDictionaryName("shared-namespace"))
+	opened := make(chan struct{}, len(paths))
+	release := make(chan struct{})
+	opener := func(string) (externalIndexDictionary, error) {
+		opened <- struct{}{}
+		<-release
+		return &stubExternalIndexDict{
+			name:    "shared",
+			info:    DictionaryInfo{Name: "shared"},
+			entries: []IndexEntry{{Keyword: "ability"}},
+		}, nil
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(paths))
+	for _, path := range paths {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := ensureDictionaryIndexWithDeps(path, store, cfg, opener)
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-opened:
+	case <-time.After(time.Second):
+		t.Fatal("first rebuild did not start")
+	}
+	select {
+	case <-opened:
+		t.Fatal("rebuilds sharing an external-store namespace ran concurrently")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	assert.Len(t, opened, 1)
+}
+
 func TestEnsureDictionaryIndex_ReusesManifestCreatedByExternalLeaseHolder(t *testing.T) {
 	t.Parallel()
 
@@ -462,6 +515,16 @@ func TestBuildIndexManifest(t *testing.T) {
 	assert.Equal(t, now, manifest.BuiltAt)
 	assert.NotEmpty(t, manifest.Fingerprint)
 	assert.Nil(t, manifest.ExpiresAt)
+}
+
+func TestBuildIndexManifest_UsesConfiguredStoreNamespace(t *testing.T) {
+	t.Parallel()
+
+	dictPath := filepath.Join(t.TempDir(), "shared.mdx")
+	require.NoError(t, os.WriteFile(dictPath, []byte("demo"), 0o644))
+	manifest, err := BuildIndexManifest(dictPath, "", WithIndexDictionaryName("owl-dictionary-42"))
+	require.NoError(t, err)
+	assert.Equal(t, "owl-dictionary-42", manifest.DictionaryName)
 }
 
 func TestPrepareForExternalIndex_AllowsExportAndResolve(t *testing.T) {

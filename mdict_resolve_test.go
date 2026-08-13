@@ -7,6 +7,8 @@ import (
 	"hash/adler32"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/op/go-logging"
@@ -58,6 +60,161 @@ func TestPrepareForExternalIndexStillExportsAndResolves(t *testing.T) {
 	assert.Equal(t, "definition-00099", string(content))
 }
 
+func TestResolveReusesSameRecordBlock(t *testing.T) {
+	dictPath, entries := writeSyntheticMDX(t, 10)
+	dict, err := New(dictPath)
+	require.NoError(t, err)
+	require.NoError(t, dict.PrepareForResolve())
+
+	first, err := dict.Resolve(entries[0])
+	require.NoError(t, err)
+	assert.Equal(t, "definition-00000", string(first))
+	first[0] = 'X'
+	require.NoError(t, os.Remove(dictPath))
+	firstAgain, err := dict.Resolve(entries[0])
+	require.NoError(t, err)
+	assert.Equal(t, "definition-00000", string(firstAgain))
+
+	second, err := dict.Resolve(entries[1])
+	require.NoError(t, err)
+	assert.Equal(t, "definition-00001", string(second))
+}
+
+func TestRecordBlockCacheCombinesConcurrentMisses(t *testing.T) {
+	t.Parallel()
+
+	var cache recordBlockCache
+	var loads atomic.Int64
+	key := recordBlockCacheKey{fileOffset: 42, compressedSize: 8, decompressedSize: 4}
+
+	const goroutines = 32
+	type cacheResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan cacheResult, goroutines)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := cache.get(key, func() ([]byte, error) {
+				loads.Add(1)
+				return []byte("data"), nil
+			})
+			results <- cacheResult{data: data, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	assert.Equal(t, int64(1), loads.Load())
+	for result := range results {
+		require.NoError(t, result.err)
+		assert.Equal(t, []byte("data"), result.data)
+	}
+}
+
+func TestRecordBlockCacheLoadsDifferentBlocksConcurrently(t *testing.T) {
+	t.Parallel()
+
+	var cache recordBlockCache
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	results := make(chan error, 2)
+	load := func(value string) func() ([]byte, error) {
+		return func() ([]byte, error) {
+			started <- struct{}{}
+			<-release
+			return []byte(value), nil
+		}
+	}
+
+	go func() {
+		_, err := cache.get(recordBlockCacheKey{fileOffset: 10}, load("one"))
+		results <- err
+	}()
+	go func() {
+		_, err := cache.get(recordBlockCacheKey{fileOffset: 20}, load("two"))
+		results <- err
+	}()
+
+	<-started
+	<-started
+	close(release)
+	require.NoError(t, <-results)
+	require.NoError(t, <-results)
+}
+
+func TestRecordBlockCacheEvictsPreviousBlock(t *testing.T) {
+	t.Parallel()
+
+	var cache recordBlockCache
+	firstKey := recordBlockCacheKey{fileOffset: 10, compressedSize: 8, decompressedSize: 4}
+	secondKey := recordBlockCacheKey{fileOffset: 20, compressedSize: 8, decompressedSize: 4}
+
+	first, err := cache.get(firstKey, func() ([]byte, error) { return []byte("one"), nil })
+	require.NoError(t, err)
+	assert.Equal(t, []byte("one"), first)
+	second, err := cache.get(secondKey, func() ([]byte, error) { return []byte("two"), nil })
+	require.NoError(t, err)
+	assert.Equal(t, []byte("two"), second)
+
+	var reloads atomic.Int64
+	first, err = cache.get(firstKey, func() ([]byte, error) {
+		reloads.Add(1)
+		return []byte("one-reloaded"), nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("one-reloaded"), first)
+	assert.Equal(t, int64(1), reloads.Load())
+}
+
+func TestResolveEvictsPreviousRecordBlock(t *testing.T) {
+	t.Parallel()
+
+	firstBlock := uncompressedRecordBlock([]byte("one"))
+	secondBlock := uncompressedRecordBlock([]byte("two"))
+	path := filepath.Join(t.TempDir(), "two-blocks.mdx")
+	require.NoError(t, os.WriteFile(path, append(firstBlock, secondBlock...), 0o600))
+
+	base := &MdictBase{
+		filePath: path,
+		fileType: MdictTypeMdx,
+		meta:     &mdictMeta{encoding: EncodingUtf8},
+	}
+	first := &MDictKeywordIndex{
+		KeywordEntry: MDictKeywordEntry{KeyWord: "first"},
+		RecordBlock: MDictKeywordIndexRecordBlock{
+			DataStartOffset:          0,
+			CompressSize:             int64(len(firstBlock)),
+			DeCompressSize:           3,
+			KeyWordPartDataEndOffset: 3,
+		},
+	}
+	second := &MDictKeywordIndex{
+		KeywordEntry: MDictKeywordEntry{KeyWord: "second"},
+		RecordBlock: MDictKeywordIndexRecordBlock{
+			DataStartOffset:          int64(len(firstBlock)),
+			CompressSize:             int64(len(secondBlock)),
+			DeCompressSize:           3,
+			KeyWordPartDataEndOffset: 3,
+		},
+	}
+
+	data, err := base.locateByKeywordIndex(first)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("one"), data)
+	data, err = base.locateByKeywordIndex(second)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("two"), data)
+	require.NoError(t, os.Remove(path))
+
+	_, err = base.locateByKeywordIndex(first)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "error opening file")
+}
+
 func TestBuildIndexStillSupportsLookup(t *testing.T) {
 	dictPath, _ := writeSyntheticMDX(t, 100)
 
@@ -98,6 +255,34 @@ func BenchmarkMdictPreparation(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkMdictResolveSameRecordBlock(b *testing.B) {
+	dictPath, entries := writeSyntheticMDX(b, 100)
+	dict, err := New(dictPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := dict.PrepareForResolve(); err != nil {
+		b.Fatal(err)
+	}
+	entries = entries[:10]
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		resolvedBytes := 0
+		for _, entry := range entries {
+			definition, err := dict.Resolve(entry)
+			if err != nil {
+				b.Fatal(err)
+			}
+			resolvedBytes += len(definition)
+		}
+		if resolvedBytes == 0 {
+			b.Fatal("resolved definitions are empty")
+		}
+	}
 }
 
 func writeSyntheticMDX(tb testing.TB, entryCount int) (string, []IndexEntry) {
@@ -196,6 +381,12 @@ func zlibBytes(tb testing.TB, data []byte) []byte {
 	require.NoError(tb, err)
 	require.NoError(tb, writer.Close())
 	return compressed.Bytes()
+}
+
+func uncompressedRecordBlock(data []byte) []byte {
+	block := []byte{0, 0, 0, 0}
+	block = binary.BigEndian.AppendUint32(block, adler32.Checksum(data))
+	return append(block, data...)
 }
 
 func formatSyntheticValue(prefix string, value int) string {

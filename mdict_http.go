@@ -35,14 +35,16 @@ func LookupAndRewriteHTMLWithEntryBase(dict *Mdict, word, assetBasePath, entryBa
 		return nil, err
 	}
 
-	return rewriteEntryHTML(content, assetBasePath, entryBasePath), nil
+	return RewriteEntryHTML(content, assetBasePath, entryBasePath), nil
 }
 
-func rewriteEntryHTML(content []byte, assetBasePath, entryBasePath string) []byte {
+// RewriteEntryHTML rewrites an MDX entry's asset, entry, and audio links for web delivery.
+func RewriteEntryHTML(content []byte, assetBasePath, entryBasePath string) []byte {
 	rewritten := RewriteEntryResourceURLs(content, assetBasePath)
-	rewritten = RewriteEntryInternalLinks(rewritten)
 	if strings.TrimSpace(entryBasePath) != "" {
 		rewritten = RewriteEntryLookupLinks(rewritten, entryBasePath)
+	} else {
+		rewritten = RewriteEntryInternalLinks(rewritten)
 	}
 	rewritten = RewriteEntryAudioLinks(rewritten, assetBasePath)
 	return rewritten

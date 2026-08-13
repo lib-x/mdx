@@ -16,6 +16,8 @@
 
 package mdx
 
+import "sync"
+
 // MdictType represents the type of the dictionary file (MDX or MDD).
 type MdictType int
 
@@ -69,6 +71,27 @@ type MdictBase struct {
 	exactLookup              map[string]*MDictKeywordEntry
 	comparableLookup         map[string]*MDictKeywordEntry
 	resourceComparableLookup map[string]*MDictKeywordEntry
+	recordBlockCache         recordBlockCache
+}
+
+type recordBlockCache struct {
+	mu       sync.Mutex
+	key      recordBlockCacheKey
+	data     []byte
+	inflight map[recordBlockCacheKey]*recordBlockCacheCall
+}
+
+type recordBlockCacheKey struct {
+	fileOffset       int64
+	compressedSize   int64
+	decompressedSize int64
+	isEncrypted      bool
+}
+
+type recordBlockCacheCall struct {
+	done chan struct{}
+	data []byte
+	err  error
 }
 
 /********************************

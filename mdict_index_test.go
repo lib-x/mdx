@@ -132,12 +132,80 @@ func TestLookupAndRewriteHTMLWithEntryBase(t *testing.T) {
 
 	dict := &Mdict{}
 	content := []byte(`<a href="entry://apple">apple</a><a href="snd://ability__gb_1.spx">🔊</a><img src="thumb_apple.jpg">`)
-	rewritten := rewriteEntryHTML(content, "/assets", "/entry?word=")
+	rewritten := RewriteEntryHTML(content, "/assets", "/entry?word=")
 
 	assert.Contains(t, string(rewritten), `href="/entry?word=apple"`)
 	assert.Contains(t, string(rewritten), `<audio controls src="/assets/snd:%2F%2Fability__gb_1.spx">🔊</audio>`)
 	assert.Contains(t, string(rewritten), `src="/assets/thumb_apple.jpg"`)
 	_ = dict
+}
+
+func TestRewriteEntryHTMLMatchesLegacyComposition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		content   string
+		assetBase string
+		entryBase string
+	}{
+		{
+			name:      "assets entries fragments and audio",
+			content:   `<link href="oalecd9.css"><a href="entry://entry://apple">apple</a><a href='entry://#usage'>usage</a><img src="thumb_apple.jpg"><a href="sound://voice.spx"><span>play</span></a>`,
+			assetBase: "/assets",
+			entryBase: "/entry?word=",
+		},
+		{
+			name:      "blank entry base only normalizes internal links",
+			content:   `<a href="entry://entry://apple">apple</a><a href="entry://#usage">usage</a><audio src="snd://voice.spx"></audio>`,
+			assetBase: "/dictionary/assets/",
+		},
+		{
+			name:      "format entry base and unrelated protocols",
+			content:   `<a href='entry://two words'>lookup</a><a href="help:phonetics">help</a><script src="app.js"></script>`,
+			assetBase: "",
+			entryBase: "/lookup/%s",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := []byte(tt.content)
+			legacy := RewriteEntryResourceURLs(content, tt.assetBase)
+			legacy = RewriteEntryInternalLinks(legacy)
+			if strings.TrimSpace(tt.entryBase) != "" {
+				legacy = RewriteEntryLookupLinks(legacy, tt.entryBase)
+			}
+			legacy = RewriteEntryAudioLinks(legacy, tt.assetBase)
+
+			assert.Equal(t, string(legacy), string(RewriteEntryHTML(content, tt.assetBase, tt.entryBase)))
+		})
+	}
+}
+
+var benchmarkRewrittenEntryHTML []byte
+
+func BenchmarkRewriteEntryHTML(b *testing.B) {
+	content := []byte(strings.Repeat(`<article class="entry"><link href="entry.css"><h1>ability</h1><p><a href="entry://entry://capability">internal</a><a href='entry://#usage'>fragment</a></p><img src="image.png"><a href="sound://voice.spx"><span>play</span></a></article>`, 8))
+	const assetBase = "/api/dictionaries/42/resource"
+	const entryBase = "/search?q="
+	b.SetBytes(int64(len(content)))
+
+	b.Run("legacy-composition", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			rewritten := RewriteEntryResourceURLs(content, assetBase)
+			rewritten = RewriteEntryInternalLinks(rewritten)
+			rewritten = RewriteEntryLookupLinks(rewritten, entryBase)
+			benchmarkRewrittenEntryHTML = RewriteEntryAudioLinks(rewritten, assetBase)
+		}
+	})
+	b.Run("single-entry-point", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			benchmarkRewrittenEntryHTML = RewriteEntryHTML(content, assetBase, entryBase)
+		}
+	})
 }
 
 func TestAssetLookupCandidates(t *testing.T) {

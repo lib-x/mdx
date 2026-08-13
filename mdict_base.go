@@ -1001,13 +1001,63 @@ func (mdict *MdictBase) keywordEntryToIndex(item *MDictKeywordEntry) (*MDictKeyw
 }
 
 func (mdict *MdictBase) locateByKeywordIndex(index *MDictKeywordIndex) ([]byte, error) {
-	return _locateDefByKWIndexInternal(index,
-		mdict.filePath,
-		mdict.meta.encryptType == EncryptRecordEnc,
+	return mdict.locateDefByKeywordIndex(index,
 		mdict.fileType == MdictTypeMdd,
 		mdict.meta.encoding == EncodingUtf16,
 		index.KeywordEntry.KeyWord,
 	)
+}
+
+func (mdict *MdictBase) fetchAndDecodeRecordBlock(index *MDictKeywordIndex, keywordForLog string) ([]byte, error) {
+	block := index.RecordBlock
+	key := recordBlockCacheKey{
+		fileOffset:       block.DataStartOffset,
+		compressedSize:   block.CompressSize,
+		decompressedSize: block.DeCompressSize,
+		isEncrypted:      mdict.meta.encryptType == EncryptRecordEnc,
+	}
+	return mdict.recordBlockCache.get(key, func() ([]byte, error) {
+		return _fetchAndDecodeRecordBlock(
+			mdict.filePath,
+			block.DataStartOffset,
+			block.CompressSize,
+			block.DeCompressSize,
+			key.isEncrypted,
+			keywordForLog,
+		)
+	})
+}
+
+func (cache *recordBlockCache) get(key recordBlockCacheKey, load func() ([]byte, error)) ([]byte, error) {
+	cache.mu.Lock()
+	if cache.data != nil && cache.key == key {
+		data := cache.data
+		cache.mu.Unlock()
+		return data, nil
+	}
+	if call := cache.inflight[key]; call != nil {
+		cache.mu.Unlock()
+		<-call.done
+		return call.data, call.err
+	}
+	if cache.inflight == nil {
+		cache.inflight = make(map[recordBlockCacheKey]*recordBlockCacheCall)
+	}
+	call := &recordBlockCacheCall{done: make(chan struct{})}
+	cache.inflight[key] = call
+	cache.mu.Unlock()
+
+	call.data, call.err = load()
+
+	cache.mu.Lock()
+	delete(cache.inflight, key)
+	if call.err == nil {
+		cache.key = key
+		cache.data = call.data
+	}
+	close(call.done)
+	cache.mu.Unlock()
+	return call.data, call.err
 }
 
 func _fetchAndDecodeRecordBlock(filePath string, fileOffset int64, compressedSize int64, decompressedSize int64, isEncrypted bool, keywordForLog string) ([]byte, error) {
@@ -1104,7 +1154,10 @@ func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch/decode record block for keyword '%s': %w", keywordForLog, err)
 	}
+	return extractDefinitionFromRecordBlock(index, decompressedRecordBlock, isMdd, isUtf16, keywordForLog)
+}
 
+func extractDefinitionFromRecordBlock(index *MDictKeywordIndex, decompressedRecordBlock []byte, isMdd, isUtf16 bool, keywordForLog string) ([]byte, error) {
 	start := index.RecordBlock.KeyWordPartStartOffset
 	end := index.RecordBlock.KeyWordPartDataEndOffset
 
@@ -1119,7 +1172,7 @@ func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRe
 
 	if isMdd {
 		log.Debugf("Returning raw MDD data for '%s' (length %d)", keywordForLog, len(data))
-		return data, nil
+		return bytes.Clone(data), nil
 	}
 
 	if isUtf16 {
@@ -1134,7 +1187,18 @@ func _locateDefByKWIndexInternal(index *MDictKeywordIndex, filePath string, isRe
 	}
 
 	log.Debugf("Returning data for keyword '%s' (length %d, encoding assumed UTF-8 or similar)", keywordForLog, len(data))
-	return data, nil
+	return bytes.Clone(data), nil
+}
+
+func (mdict *MdictBase) locateDefByKeywordIndex(index *MDictKeywordIndex, isMdd, isUtf16 bool, keywordForLog string) ([]byte, error) {
+	log.Debugf("Locating definition for keyword '%s' using index: %+v", keywordForLog, index.RecordBlock)
+
+	decompressedRecordBlock, err := mdict.fetchAndDecodeRecordBlock(index, keywordForLog)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch/decode record block for keyword '%s': %w", keywordForLog, err)
+	}
+
+	return extractDefinitionFromRecordBlock(index, decompressedRecordBlock, isMdd, isUtf16, keywordForLog)
 }
 
 func locateDefByKWIndex(index *MDictKeywordIndex, filePath string, isRecordEncrypted, isMdd, isUtf16 bool) ([]byte, error) {
@@ -1151,9 +1215,7 @@ func (mdict *MdictBase) locateByKeywordEntry(item *MDictKeywordEntry) ([]byte, e
 
 	log.Debugf("Obtained keyword index for '%s': %+v", item.KeyWord, index.RecordBlock)
 
-	return _locateDefByKWIndexInternal(index,
-		mdict.filePath,
-		mdict.meta.encryptType == EncryptRecordEnc,
+	return mdict.locateDefByKeywordIndex(index,
 		mdict.fileType == MdictTypeMdd,
 		mdict.meta.encoding == EncodingUtf16,
 		item.KeyWord,
